@@ -168,9 +168,10 @@ function buildWorld() {
   return { files, input, oldInput, stageJ, stageI, prod11, prodI };
 }
 
-function loadGas(world, activeId) {
+function loadGas(world, activeId, props = {}) {
   const alerts = [];
   const mails = [];
+  const triggers = [];
   const byId = id => {
     const f = world.files.find(x => x.id === id);
     if (!f) throw new Error(`no file ${id}`);
@@ -181,7 +182,7 @@ function loadGas(world, activeId) {
     SpreadsheetApp: {
       openById: byId,
       flush: () => {},
-      getActiveSpreadsheet: () => byId(activeId),
+      getActiveSpreadsheet: () => (activeId ? byId(activeId) : null),
       getUi: () => ({ alert: m => alerts.push(m), createMenu: () => ({ addItem() { return this; }, addToUi() {} }) })
     },
     DriveApp: {
@@ -195,11 +196,21 @@ function loadGas(world, activeId) {
     MimeType: { GOOGLE_SHEETS: 'application/vnd.google-apps.spreadsheet' },
     LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
     MailApp: { sendEmail: (to, s, b) => mails.push(s + '\n' + b) },
-    Session: { getEffectiveUser: () => ({ getEmail: () => 'test@example.com' }) }
+    Session: { getEffectiveUser: () => ({ getEmail: () => 'test@example.com' }) },
+    PropertiesService: { getScriptProperties: () => ({ getProperty: k => props[k] || null, setProperty: (k, v) => { props[k] = v; } }) },
+    ScriptApp: {
+      getProjectTriggers: () => triggers.slice(),
+      deleteTrigger: t => triggers.splice(triggers.indexOf(t), 1),
+      newTrigger: fn => {
+        const b = { forSpreadsheet: () => b, onFormSubmit: () => b, timeBased: () => b, atHour: () => b, everyDays: () => b, inTimezone: () => b,
+          create: () => triggers.push({ getHandlerFunction: () => fn }) };
+        return b;
+      }
+    }
   };
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'juchu_transfer.gs'), 'utf8'), ctx);
-  return { gas: ctx, alerts, mails };
+  return { gas: ctx, alerts, mails, props, triggers };
 }
 
 // ===== テスト =====
@@ -208,7 +219,7 @@ const tests = [];
 const test = (name, fn) => tests.push({ name, fn });
 
 test('設定ファイルを読み分けられる', () => {
-  const { gas } = loadGas(buildWorld(), 'SJ');
+  const { gas } = loadGas(buildWorld(), 'SET');
   const cfg = gas.parseSettings_(settingsGrid);
   assert.strictEqual(cfg.input.flagCol, 17);
   assert.strictEqual(cfg.stageJuchu.flagCol, 10);
@@ -224,7 +235,7 @@ test('設定ファイルを読み分けられる', () => {
 });
 
 test('期と月のシート名', () => {
-  const { gas } = loadGas(buildWorld(), 'SJ');
+  const { gas } = loadGas(buildWorld(), 'SET');
   const nov = new Date(2026, 10, 5);
   assert.strictEqual(gas.juchuSheetName_(11, nov), '27期11月');
   assert.strictEqual(gas.juchuSheetName_(7, nov), '27期7月');
@@ -235,14 +246,14 @@ test('期と月のシート名', () => {
 });
 
 test('書込み行：下に2行空いた最初の行', () => {
-  const { gas } = loadGas(buildWorld(), 'SJ');
+  const { gas } = loadGas(buildWorld(), 'SET');
   const b = [false, true, false, true, true, true, true];
   assert.strictEqual(gas.findBlankRun_(b, 3), 3);
   assert.strictEqual(gas.findBlankRun_([false, false], 3), 2);
 });
 
 test('数値と区分名の変換', () => {
-  const { gas } = loadGas(buildWorld(), 'SJ');
+  const { gas } = loadGas(buildWorld(), 'SET');
   assert.strictEqual(gas.toNumber_('270,000'), 270000);
   assert.strictEqual(gas.toNumber_('２７００００'), 270000);
   assert.strictEqual(gas.toNumber_('未定'), '未定');
@@ -251,7 +262,7 @@ test('数値と区分名の変換', () => {
 
 test('GAS_1：フォーム送信で ❷❸ に書き、❶ に copyflag', () => {
   const w = buildWorld();
-  const { gas } = loadGas(w, 'SJ');
+  const { gas } = loadGas(w, 'SET');
   gas.onFormSubmitHandler({ range: w.input.getRange(2, 1) });
 
   // ❷：見出し3行の下の4行目
@@ -275,7 +286,7 @@ test('GAS_1：フォーム送信で ❷❸ に書き、❶ に copyflag', () => 
 
 test('GAS_1：古い回答シートからの送信は無視', () => {
   const w = buildWorld();
-  const { gas } = loadGas(w, 'SJ');
+  const { gas } = loadGas(w, 'SET');
   w.oldInput.cells.push([new Date(), 'kato@nlg.co.jp']);
   gas.onFormSubmitHandler({ range: w.oldInput.getRange(2, 1) });
   assert.strictEqual(w.stageJ.getLastRow(), 3);
@@ -283,7 +294,7 @@ test('GAS_1：古い回答シートからの送信は無視', () => {
 
 test('GAS_1：未登録アドレスは「無し」、受注区分は左を優先', () => {
   const w = buildWorld();
-  const { gas } = loadGas(w, 'SJ');
+  const { gas } = loadGas(w, 'SET');
   w.input.cells[1][1] = 'unknown@example.com';
   w.input.cells[1][4] = '';
   w.input.cells[1][5] = '下請';
@@ -295,12 +306,12 @@ test('GAS_1：未登録アドレスは「無し」、受注区分は左を優先
 test('GAS_2：コピー実行で本番へ書き、copyflag を入れる（既存行は飛ばす）', () => {
   const w = buildWorld();
   const realNow = Date;
-  const { gas, alerts } = loadGas(w, 'SJ');
+  const { gas, alerts } = loadGas(w, 'SET');
   gas.onFormSubmitHandler({ range: w.input.getRange(2, 1) });
   // テストは 2026年11月 として実行
   gas.Date = class extends realNow { constructor(...a) { super(...(a.length ? a : [2026, 10, 6, 1, 0])); } };
 
-  gas.menuCopyToProduction();
+  gas.menuCopyJuchu();
   assert.match(alerts[0], /1 件コピー/);
   // 本番 受注一覧 27期11月：データ2行の下、K・L列に数式がある空き行（6行目）へ
   same(w.prod11.cells[5].slice(0, 9), [11, 5, '岐阜市契約課', '元請', '官公庁', '塗装', '岐阜市金華橋通り1', '東谷', 270000]);
@@ -308,13 +319,13 @@ test('GAS_2：コピー実行で本番へ書き、copyflag を入れる（既存
   assert.ok(isDate(w.stageJ.get(4, 10)));
 
   // 2回目は何もしない
-  gas.menuCopyToProduction();
+  gas.menuCopyJuchu();
   assert.match(alerts[1], /0 件コピー/);
 });
 
 test('GAS_2：深夜実行は ❷❸ 両方。❸ は copyflag 済みの既存行を飛ばす', () => {
   const w = buildWorld();
-  const { gas, mails } = loadGas(w, 'SJ');
+  const { gas, mails } = loadGas(w, 'SET');
   gas.onFormSubmitHandler({ range: w.input.getRange(2, 1) });
   const realNow = Date;
   gas.Date = class extends realNow { constructor(...a) { super(...(a.length ? a : [2026, 10, 6, 1, 0])); } };
@@ -330,7 +341,7 @@ test('GAS_2：深夜実行は ❷❸ 両方。❸ は copyflag 済みの既存�
 
 test('GAS_2：該当する期・月のシートが無ければ、その行は残してエラー通知', () => {
   const w = buildWorld();
-  const { gas, mails } = loadGas(w, 'SJ');
+  const { gas, mails } = loadGas(w, 'SET');
   gas.onFormSubmitHandler({ range: w.input.getRange(2, 1) });
   const realNow = Date;
   gas.Date = class extends realNow { constructor(...a) { super(...(a.length ? a : [2026, 10, 6, 1, 0])); } };
@@ -341,11 +352,38 @@ test('GAS_2：該当する期・月のシートが無ければ、その行は残
   assert.strictEqual(w.stageJ.get(4, 10), '', 'copyflag は空のまま（次回また試す）');
 });
 
-test('GAS_2：確認用以外のファイルでは何もしない', () => {
+test('setupTriggers：設定ファイルを覚え、トリガーから動くときもその設定を読む', () => {
+  const w = buildWorld();
+  const props = {};
+  const first = loadGas(w, 'SET', props);
+  first.gas.setupTriggers();
+  first.gas.setupTriggers();   // 2回実行してもトリガーは2つのまま
+  same(first.triggers.map(t => t.getHandlerFunction()), ['onFormSubmitHandler', 'nightlyCopyToProduction']);
+  assert.strictEqual(props.SETTINGS_FILE_ID, 'SET');
+
+  // トリガー実行時（開いているファイルなし）
+  const { gas } = loadGas(w, null, props);
+  gas.onFormSubmitHandler({ range: w.input.getRange(2, 1) });
+  assert.strictEqual(w.stageJ.getLastRow(), 4);
+});
+
+test('メニュー「両方」は ❷❸ をまとめてコピーし、結果を1回表示', () => {
+  const w = buildWorld();
+  const { gas, alerts } = loadGas(w, 'SET');
+  gas.onFormSubmitHandler({ range: w.input.getRange(2, 1) });
+  const realNow = Date;
+  gas.Date = class extends realNow { constructor(...a) { super(...(a.length ? a : [2026, 10, 6, 1, 0])); } };
+  gas.menuCopyBoth();
+  assert.strictEqual(alerts.length, 1);
+  assert.match(alerts[0], /確認_受注一覧_2611：本番へ 1 件/);
+  assert.match(alerts[0], /確認_工事インデックス_2611：本番へ 1 件/);
+});
+
+test('設定ファイル以外で、setupTriggers 前ならエラーを表示', () => {
   const w = buildWorld();
   const { gas, alerts } = loadGas(w, 'PJ');
-  gas.menuCopyToProduction();
-  assert.match(alerts[0], /確認用ファイルではありません/);
+  gas.menuCopyBoth();
+  assert.match(alerts[0], /setupTriggers を実行してください/);
 });
 
 let failed = 0;

@@ -10,23 +10,21 @@
  *  両方に書けたら ❶ の copyflag に日時を入れる。
  *
  * 【GAS_2】事前確認用 → 本番（設定 9）
- *  確認用ファイルのメニュー「カスタムメニュー ＞ コピー実行」、または毎日深夜1時に、
+ *  設定ファイルのメニュー「カスタムメニュー ＞ コピー実行（…）」、または毎日深夜1時に、
  *  copyflag が空の行を本番「受注一覧」「工事インデックス」へ書き込み、
  *  書けた行の copyflag に日時を入れる。
  *  受注一覧は「27期11月」のような期と月のシートへ書く（期は7月始まり）。
  *
- * 【設置】このコードを 確認_受注一覧 と 確認_工事インデックス の両方のスクリプトに貼り、
- *  どちらか一方だけで setupTriggers を1回実行する（README.md 参照）。
+ * 【設置】このコードを 設定ファイル の Apps Script（拡張機能 ＞ Apps Script）に貼り、
+ *  setupTriggers を1回実行する（README.md 参照）。確認用ファイルには貼らなくてよい。
  */
 
 
 // ===== 共通設定 =====
 
-// 対象月（設定ファイル名の末尾）。月が替わったらここを変更する
-const TARGET_MONTH = '2611';
-
-// 設定ファイルのID（空なら「設定ファイル_対象月」という名前で探す）
+// 設定ファイルのID（空なら、setupTriggers を実行した設定ファイルを使う）
 const SETTINGS_FILE_ID = '';
+const SETTINGS_ID_PROPERTY = 'SETTINGS_FILE_ID';
 
 const SETTINGS_SHEET_NAME = '設定ファイル';
 const STAFF_TABLE_TITLE = '担当名変換テーブル';
@@ -47,21 +45,19 @@ const LOCK_WAIT_MS = 30000;
 // ===== 設置・確認用（手動実行） =====
 
 /**
- * 初回だけ手動実行（確認用ファイルのどちらか一方で1回だけ）
- * フォーム送信時トリガー（GAS_1）と深夜1時トリガー（GAS_2）を作成
+ * 初回と月替わりに1回だけ手動実行（設定ファイルの Apps Script で）
+ * この設定ファイルを覚え、フォーム送信時トリガー（GAS_1）と深夜1時トリガー（GAS_2）を作成
  */
 function setupTriggers() {
 
   const cfg = loadConfig_();
   const inputSs = openBlock_(cfg, cfg.input);
 
+  // トリガーから動くときも同じ設定ファイルを読むように覚えておく
+  PropertiesService.getScriptProperties().setProperty(SETTINGS_ID_PROPERTY, cfg.settingsId);
+
   // 既に同じトリガーがある場合は削除して、重複起動を防ぐ
-  ScriptApp.getProjectTriggers().forEach(trigger => {
-    const fn = trigger.getHandlerFunction();
-    if (fn === 'onFormSubmitHandler' || fn === 'nightlyCopyToProduction') {
-      ScriptApp.deleteTrigger(trigger);
-    }
-  });
+  removeTriggers();
 
   ScriptApp.newTrigger('onFormSubmitHandler')
     .forSpreadsheet(inputSs)
@@ -75,7 +71,19 @@ function setupTriggers() {
     .inTimezone(TIMEZONE)
     .create();
 
-  console.log(`トリガーを作成しました。フォーム送信：${inputSs.getName()}／毎日 ${NIGHTLY_HOUR}時台：本番へコピー`);
+  console.log(`トリガーを作成しました。設定：${cfg.settingsName}／フォーム送信：${inputSs.getName()}／毎日 ${NIGHTLY_HOUR}時台：本番へコピー`);
+}
+
+/**
+ * このスクリプトのトリガーを削除（前の月の設定ファイルで実行して止める）
+ */
+function removeTriggers() {
+  ScriptApp.getProjectTriggers().forEach(trigger => {
+    const fn = trigger.getHandlerFunction();
+    if (fn === 'onFormSubmitHandler' || fn === 'nightlyCopyToProduction') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
 }
 
 /**
@@ -216,29 +224,32 @@ function convertValue_(field, rowValues, cfg) {
 // ===== GAS_2：事前確認用 → 本番 =====
 
 /**
- * 確認用ファイルを開いたときにメニューを追加
+ * 設定ファイルを開いたときにメニューを追加
  */
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('カスタムメニュー')
-    .addItem('コピー実行', 'menuCopyToProduction')
+    .addItem('コピー実行（確認_受注一覧 → 受注一覧）', 'menuCopyJuchu')
+    .addItem('コピー実行（確認_工事インデックス → 工事インデックス）', 'menuCopyIndex')
+    .addItem('コピー実行（両方）', 'menuCopyBoth')
     .addToUi();
 }
 
+function menuCopyJuchu() { runMenuCopy_(cfg => [cfg.stageJuchu]); }
+function menuCopyIndex() { runMenuCopy_(cfg => [cfg.stageIndex]); }
+function menuCopyBoth() { runMenuCopy_(cfg => [cfg.stageJuchu, cfg.stageIndex]); }
+
 /**
- * メニュー「コピー実行」：開いている確認用ファイルの分だけ本番へコピー
+ * メニューの「コピー実行」：選んだ確認用ファイルの分を本番へコピーし、結果を表示
  */
-function menuCopyToProduction() {
+function runMenuCopy_(pickStages) {
 
   const ui = SpreadsheetApp.getUi();
 
   try {
     const message = withLock_(() => {
       const cfg = loadConfig_();
-      const activeId = SpreadsheetApp.getActiveSpreadsheet().getId();
-      const stage = [cfg.stageJuchu, cfg.stageIndex].find(b => openBlock_(cfg, b).getId() === activeId);
-      if (!stage) return 'このファイルは設定ファイルに書かれた確認用ファイルではありません。';
-      return resultMessage_(stage, copyToProduction_(cfg, stage));
+      return pickStages(cfg).map(stage => resultMessage_(stage, copyToProduction_(cfg, stage))).join('\n\n');
     });
     ui.alert(message);
   } catch (err) {
@@ -414,6 +425,7 @@ function loadConfig_() {
   const sheet = ss.getSheetByName(SETTINGS_SHEET_NAME) || ss.getSheets()[0];
   const cfg = parseSettings_(sheet.getDataRange().getDisplayValues());
   cfg.settingsName = ss.getName();
+  cfg.settingsId = ss.getId();
   cfg.cache = {};
   return cfg;
 }
@@ -535,9 +547,16 @@ function parseStaffTable_(rows) {
 
 // ===== ファイルを開く =====
 
+/**
+ * 設定ファイルを開く：コードの SETTINGS_FILE_ID → setupTriggers で覚えたID → 開いている設定ファイル の順
+ */
 function openSettingsSpreadsheet_() {
-  if (SETTINGS_FILE_ID) return SpreadsheetApp.openById(SETTINGS_FILE_ID);
-  return SpreadsheetApp.openById(findSpreadsheetIdByName_(`設定ファイル_${TARGET_MONTH}`, ''));
+  const id = SETTINGS_FILE_ID || PropertiesService.getScriptProperties().getProperty(SETTINGS_ID_PROPERTY);
+  if (id) return SpreadsheetApp.openById(id);
+
+  const active = SpreadsheetApp.getActiveSpreadsheet();
+  if (active && active.getSheetByName(SETTINGS_SHEET_NAME)) return active;
+  throw new Error('設定ファイルが分かりません。設定ファイルの Apps Script で setupTriggers を実行してください');
 }
 
 /**

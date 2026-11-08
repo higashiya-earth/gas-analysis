@@ -128,8 +128,9 @@ function buildWorld() {
 
 function loadGas(world, activeId, props = {}) {
   const alerts = [], mails = [], triggers = [];
+  const REAL_SETTINGS_ID = '1NJEMrTL5u0Zs29uAnvP-1I7R_Z3Qn8MTWxIFHonu-Jc';
   const byId = id => {
-    const f = world.files.find(x => x.id === id);
+    const f = world.files.find(x => x.id === (id === REAL_SETTINGS_ID ? 'SET' : id));
     if (!f) throw new Error(`no file ${id}`);
     return f;
   };
@@ -310,10 +311,18 @@ test('setupTriggers：設定ファイルを覚え、トリガーは1組だけ', 
   first.gas.setupTriggers();
   first.gas.setupTriggers();
   same(first.triggers.map(t => t.getHandlerFunction()), ['onFormSubmitV08', 'nightlyCopyV08']);
-  assert.strictEqual(props.SETTINGS_FILE_ID_V08, 'SET');
+  assert.strictEqual(props.SETTINGS_FILE_ID_V08, 'SET');   // コードのIDで開いた設定ファイル
   const { gas } = loadGas(w, null, props);
   gas.onFormSubmitV08({ range: w.file1.getRange(2, 1) });
   assert.strictEqual(w.file2.getLastRow(), 5);
+});
+
+test('スクリプトが設定ファイル以外（File1 など）に入っていても、コードのIDで設定を読める', () => {
+  const w = buildWorld();
+  const { gas } = loadGas(w, 'F1');
+  gas.onFormSubmitV08({ range: w.file1.getRange(2, 1) });
+  assert.strictEqual(w.file2.getLastRow(), 5);
+  gas.setupTriggers();
 });
 
 let failed = 0;

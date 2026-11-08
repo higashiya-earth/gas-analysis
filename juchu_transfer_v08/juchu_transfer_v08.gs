@@ -20,8 +20,9 @@
 
 // ===== 共通設定 =====
 
-// 設定ファイルのID（空なら、setupTriggers を実行した設定ファイルを使う）
-const SETTINGS_FILE_ID = '';
+// 設定ファイル_v08 のID（URL の /d/ と /edit の間）。別の設定ファイルを使うときはここを変える
+// 空にすると、setupTriggers で覚えたID、またはこのスクリプトを入れた設定ファイルを使う
+const SETTINGS_FILE_ID = '1NJEMrTL5u0Zs29uAnvP-1I7R_Z3Qn8MTWxIFHonu-Jc';
 const SETTINGS_ID_PROPERTY = 'SETTINGS_FILE_ID_V08';
 
 const SETTINGS_SHEET_NAME = '設定ファイル';
@@ -592,7 +593,7 @@ function openSettingsSpreadsheet_() {
 
   const active = SpreadsheetApp.getActiveSpreadsheet();
   if (active && active.getSheetByName(SETTINGS_SHEET_NAME)) return active;
-  throw new Error('設定ファイルが分かりません。設定ファイルの Apps Script で setupTriggers を実行してください');
+  throw new Error('設定ファイルが分かりません。コード先頭の SETTINGS_FILE_ID に設定ファイルのIDを書くか、設定ファイルの Apps Script で setupTriggers を実行してください');
 }
 
 /**

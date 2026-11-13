@@ -25,6 +25,9 @@
 // 設定ファイル_v08 のID（URL の /d/ と /edit の間）。別の設定ファイルを使うときはここを変える
 // 空にすると、setupTriggers で覚えたID、またはこのスクリプトを入れた設定ファイルを使う
 const SETTINGS_FILE_ID = '1NJEMrTL5u0Zs29uAnvP-1I7R_Z3Qn8MTWxIFHonu-Jc';
+
+// この GAS の版。メニューの結果表示と「設定の確認」に出るので、貼り替えたコードが動いているか確かめられる
+const SCRIPT_VERSION = 'v08-File7対応 2026-11-13b';
 const SETTINGS_ID_PROPERTY = 'SETTINGS_FILE_ID_V08';
 
 const SETTINGS_SHEET_NAME = '設定ファイル';
@@ -45,6 +48,7 @@ const BLANK_ROWS_BELOW = 2;
 const SEARCH_START_ROW = 2;
 
 const NIGHTLY_HOUR = 1;
+// 日付・Copyflag は日本時間の文字列で書く（各ファイルのタイムゾーン設定が違っても日付がずれないように）
 const TIMEZONE = 'Asia/Tokyo';
 const FLAG_FORMAT = 'yyyy/MM/dd HH:mm:ss';
 const LOCK_WAIT_MS = 30000;
@@ -96,14 +100,23 @@ function removeTriggers() {
  * 設定ファイルの読み込み結果を確認する（データは書き込まない）
  */
 function checkSettings() {
+  console.log(settingsReport_().join('\n'));
+}
+
+function settingsReport_() {
 
   const cfg = loadConfig_();
-  const lines = [`設定ファイル：${cfg.settingsName}`];
+  const lines = [`GAS：${SCRIPT_VERSION}`, `設定ファイル：${cfg.settingsName}`];
+  const jst = Utilities.formatDate(new Date(), TIMEZONE, 'Z');
 
   fileNumbers_(cfg).forEach(n => {
     const f = cfg.files[n];
     const ss = openFile_(cfg, n);
     lines.push(`■ File${n}：${f.file}（${f.drive}）→ ${ss.getUrl()}`);
+    const tz = ss.getSpreadsheetTimeZone();
+    if (Utilities.formatDate(new Date(), tz, 'Z') !== jst) {
+      lines.push(`   ※タイムゾーンが ${tz}。表示がずれるので「ファイル ＞ 設定 ＞ タイムゾーン」を (GMT+09:00) 東京 にしてください`);
+    }
     if (n !== 3) {
       const sheet = sheetOf_(ss, f);
       const head = findNamesRow_(sheet, f);
@@ -116,9 +129,9 @@ function checkSettings() {
     }
   });
   lines.push(`担当名変換テーブル：${Object.keys(cfg.staff).length} 件`);
-  lines.push(`今日の File3 シート：${periodSheetName_(new Date().getFullYear(), new Date().getMonth() + 1)}`);
-
-  console.log(lines.join('\n'));
+  const today = dateParts_(dateToText_(new Date(), TIMEZONE));
+  lines.push(`今日の File3 シート：${periodSheetName_(today.y, today.m)}`);
+  return lines;
 }
 
 /**
@@ -174,7 +187,8 @@ function onFormSubmitV08(e) {
 function processFormRow_(cfg, file1Sheet, row) {
 
   const f1 = cfg.files[1];
-  const values = file1Sheet.getRange(row, 1, 1, f1.lastCol).getValues()[0];
+  const tz1 = file1Sheet.getParent().getSpreadsheetTimeZone();
+  const values = file1Sheet.getRange(row, 1, 1, f1.lastCol).getValues()[0].map(v => dateToText_(v, tz1));
 
   // 書込み済み（Copyflag1 あり）の行は二重に書かない
   if (!isBlank_(values[f1.flagCol - 1])) return;
@@ -189,7 +203,7 @@ function processFormRow_(cfg, file1Sheet, row) {
     writeCells_(sheet, findWriteRow_(sheet, BLANK_COLS_DEFAULT, findNamesRow_(sheet, f) + 1), cells);
   });
 
-  file1Sheet.getRange(row, f1.flagCol).setValue(new Date()).setNumberFormat(FLAG_FORMAT);
+  file1Sheet.getRange(row, f1.flagCol).setValue(stamp_());
   SpreadsheetApp.flush();
 }
 
@@ -206,12 +220,12 @@ function convertFormValue_(field, row, cfg) {
 
   // 1) 年・月・日・日付はタイムスタンプから（転記元の欄が空でも列名で決める）
   if (['年', '月', '日', '日付'].indexOf(name) >= 0) {
-    const d = toDate_(row[f1.colByName['タイムスタンプ'] - 1]);
+    const d = dateParts_(row[f1.colByName['タイムスタンプ'] - 1]);
     if (!d) return '';
-    if (name === '年') return d.getFullYear();
-    if (name === '月') return d.getMonth() + 1;
-    if (name === '日') return d.getDate();
-    return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    if (name === '年') return d.y;
+    if (name === '月') return d.m;
+    if (name === '日') return d.d;
+    return `${d.y}/${pad2_(d.m)}/${pad2_(d.d)}`;
   }
 
   if (!field.sources.length) return undefined;
@@ -263,7 +277,20 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('カスタムメニュー')
     .addItem('コピー実行', 'menuCopyV08')
+    .addItem('設定の確認', 'menuCheckSettingsV08')
     .addToUi();
+}
+
+/**
+ * メニュー「設定の確認」：checkSettings の結果を画面に出す（データは書き込まない）
+ */
+function menuCheckSettingsV08() {
+  const ui = SpreadsheetApp.getUi();
+  try {
+    ui.alert(settingsReport_().join('\n'));
+  } catch (err) {
+    ui.alert(`設定を読めませんでした。\n${err.message}`);
+  }
 }
 
 /**
@@ -275,7 +302,7 @@ function menuCopyV08() {
   try {
     const message = withLock_(() => {
       const cfg = loadConfig_();
-      return [copyFile2_(cfg), copyFile4_(cfg)].map(resultMessage_).join('\n\n');
+      return [`（GAS ${SCRIPT_VERSION}）`].concat([copyFile2_(cfg), copyFile4_(cfg)].map(resultMessage_)).join('\n\n');
     });
     ui.alert(message);
   } catch (err) {
@@ -319,8 +346,8 @@ function copyFile2_(cfg) {
 /**
  * File4 の Copyflag4 が空の行を File5・File7 へ、当初受注金額が基準以上なら File6 へも書く
  * すべて（File6 は対象の行だけ）書けたときに Copyflag4 を付ける。
- * 途中で止まった行を次回やり直しても二重にならないよう、File6・File7 は同じ行があれば書かず、
- * File5 は最後に書く
+ * 途中で止まった行や Copyflag4 を消した行をやり直しても二重にならないよう、
+ * File5・File6・File7 とも同じ行がすでにあれば書かない
  */
 function copyFile4_(cfg) {
 
@@ -347,7 +374,7 @@ function copyFile4_(cfg) {
       }
     }
     const cells5 = f5.fields.map(x => ({ col: x.dest, value: values[x.sources[0] - 1] }));
-    writeCells_(sheet5, findWriteRow_(sheet5, BLANK_COLS_DEFAULT, head5 + 1), cells5);
+    if (!rowExists_(sheet5, head5, cells5)) writeCells_(sheet5, findWriteRow_(sheet5, BLANK_COLS_DEFAULT, head5 + 1), cells5);
   }, f7 ? 'File4 → File5・File6・File7' : 'File4 → File5・File6');
 }
 
@@ -377,7 +404,9 @@ function eachPendingRow_(cfg, n, targetFields, write, label) {
   if (last <= headerRow) return result;
 
   const width = Math.max(flagCol, ...targetFields.map(x => x.sources[0] || 1));
-  const rows = sheet.getRange(headerRow + 1, 1, last - headerRow, width).getValues();
+  const tz = sheet.getParent().getSpreadsheetTimeZone();
+  const rows = sheet.getRange(headerRow + 1, 1, last - headerRow, width).getValues()
+    .map(r => r.map(v => dateToText_(v, tz)));
 
   rows.forEach((values, i) => {
     const row = headerRow + 1 + i;
@@ -386,7 +415,7 @@ function eachPendingRow_(cfg, n, targetFields, write, label) {
 
     try {
       write(values);
-      sheet.getRange(row, flagCol).setValue(new Date()).setNumberFormat(FLAG_FORMAT);
+      sheet.getRange(row, flagCol).setValue(stamp_());
       SpreadsheetApp.flush();
       result.copied++;
     } catch (err) {
@@ -409,9 +438,10 @@ function rowExists_(sheet, headRow, cells) {
   const last = sheet.getLastRow();
   if (last <= headRow) return false;
   const width = Math.max(...cells.map(c => c.col));
+  const tz = sheet.getParent().getSpreadsheetTimeZone();
   const rows = sheet.getRange(headRow + 1, 1, last - headRow, width).getValues();
-  const keyOf = v => {
-    if (Object.prototype.toString.call(v) === '[object Date]') return isNaN(v) ? '' : String(v.getTime());
+  const keyOf = raw => {
+    const v = dateToText_(raw, tz);
     const n = toNumber_(v);
     return typeof n === 'number' ? String(n) : normalize_(v);
   };
@@ -767,10 +797,33 @@ function categoryName_(header) {
   return m ? m[1].trim() : String(header).trim();
 }
 
-function toDate_(v) {
-  if (Object.prototype.toString.call(v) === '[object Date]') return isNaN(v) ? null : v;
-  const m = String(v).match(/(\d{4})\D(\d{1,2})\D(\d{1,2})/);
-  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+/**
+ * 「2026/11/13 18:12:46」などの文字列から年・月・日を取り出す
+ */
+function dateParts_(v) {
+  const m = String(v === null || v === undefined ? '' : v).match(/(\d{4})\D(\d{1,2})\D(\d{1,2})/);
+  return m ? { y: Number(m[1]), m: Number(m[2]), d: Number(m[3]) } : null;
+}
+
+/**
+ * 日時の値を、そのファイルのタイムゾーンで見たとおりの文字列にする（日付だけなら yyyy/MM/dd）
+ * 書き込み先のタイムゾーンが違っても、同じ日付・時刻として読まれる
+ */
+function dateToText_(v, tz) {
+  if (Object.prototype.toString.call(v) !== '[object Date]' || isNaN(v)) return v;
+  const t = Utilities.formatDate(v, tz, 'HH:mm:ss');
+  return Utilities.formatDate(v, tz, t === '00:00:00' ? 'yyyy/MM/dd' : FLAG_FORMAT);
+}
+
+/**
+ * Copyflag に入れる日時（日本時間）
+ */
+function stamp_() {
+  return Utilities.formatDate(new Date(), TIMEZONE, FLAG_FORMAT);
+}
+
+function pad2_(n) {
+  return ('0' + n).slice(-2);
 }
 
 /**

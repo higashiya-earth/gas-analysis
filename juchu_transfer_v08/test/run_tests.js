@@ -10,6 +10,8 @@ const vm = require('vm');
 const assert = require('assert');
 
 const isDate = v => Object.prototype.toString.call(v) === '[object Date]';
+// Copyflag は日本時間の文字列（例：2026/11/13 18:18:25）
+const isStamp = v => /^\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2}$/.test(String(v));
 const same = (actual, expected, msg) => assert.deepStrictEqual(JSON.parse(JSON.stringify(actual)), expected, msg);
 
 // ===== 模擬シート =====
@@ -26,6 +28,7 @@ class Sheet {
   }
   autoResizeRows(start, n) { this.resized.push([start, n]); }
   getName() { return this.name; }
+  getParent() { return this.parent || { getSpreadsheetTimeZone: () => 'Asia/Tokyo' }; }
   getLastRow() {
     let last = 0;
     this.cells.forEach((r, i) => { if (r.some(v => v !== '' && v !== undefined)) last = i + 1; });
@@ -67,12 +70,13 @@ class Sheet {
 }
 
 class Spreadsheet {
-  constructor(id, name, sheets) { this.id = id; this.name = name; this.sheets = sheets; }
+  constructor(id, name, sheets, tz) { this.id = id; this.name = name; this.sheets = sheets; this.tz = tz || 'Asia/Tokyo'; }
+  getSpreadsheetTimeZone() { return this.tz; }
   getId() { return this.id; }
   getName() { return this.name; }
   getUrl() { return `https://docs.google.com/spreadsheets/d/${this.id}`; }
-  getSheets() { return this.sheets; }
-  getSheetByName(n) { return this.sheets.find(s => s.name === n) || null; }
+  getSheets() { this.sheets.forEach(s => { s.parent = this; }); return this.sheets; }
+  getSheetByName(n) { const s = this.getSheets().find(x => x.name === n); return s || null; }
 }
 
 // ===== 実際の設定ファイル_v08 の内容（2026-11-13 時点、File1〜File7） =====
@@ -138,6 +142,16 @@ function buildWorld() {
   return { files, file1, file2, file3Nov, file4, file5, file6, file7 };
 }
 
+// テスト用の日時は Node の現地時刻で作り、日本時間（+9）として扱う。ロサンゼルスは -17時間ずらして表す
+const TZ_SHIFT = { 'Asia/Tokyo': 0, 'Asia/Dili': 0, 'America/Los_Angeles': -17 };
+function formatDate(d, tz, fmt) {
+  const x = new Date(d.getTime() + (TZ_SHIFT[tz] || 0) * 3600 * 1000);
+  const p = n => ('0' + n).slice(-2);
+  return fmt.replace('yyyy', x.getFullYear()).replace('MM', p(x.getMonth() + 1)).replace('dd', p(x.getDate()))
+    .replace('HH', p(x.getHours())).replace('mm', p(x.getMinutes())).replace('ss', p(x.getSeconds()))
+    .replace('Z', TZ_SHIFT[tz] ? '-0800' : '+0900');
+}
+
 function loadGas(world, activeId, props = {}) {
   const alerts = [], mails = [], triggers = [];
   const REAL_SETTINGS_ID = '1NJEMrTL5u0Zs29uAnvP-1I7R_Z3Qn8MTWxIFHonu-Jc';
@@ -163,6 +177,7 @@ function loadGas(world, activeId, props = {}) {
       }
     },
     MimeType: { GOOGLE_SHEETS: 'application/vnd.google-apps.spreadsheet' },
+    Utilities: { formatDate: (d, tz, fmt) => formatDate(d, tz, fmt) },
     LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
     MailApp: { sendEmail: (to, s, b) => mails.push(s + '\n' + b) },
     Session: { getEffectiveUser: () => ({ getEmail: () => 'test@example.com' }) },
@@ -231,12 +246,12 @@ test('GAS_Pri：File2・File4 に書き、Copyflag1 に日時', () => {
 
   // File4：既存2行（4〜5行目）の下の6行目
   const r = w.file4.cells[5];
-  assert.ok(isDate(r[1]));
+  assert.strictEqual(r[1], '2026/11/08');
   same([r[4], r[5], r[6], r[7], r[9], r[10], r[11], r[15], r[16], r[17], r[18], r[19]],
     ['東谷', '岐阜市', '岐阜 花子', '随時', '市役所前町', '美江寺交差点歩道', '2026/12/12', '無し', '○', '○', 100000, '横断歩道\n歩道路側帯']);
   assert.ok(r[2] === undefined && r[3] === undefined && r[8] === undefined && r[20] === undefined, '指示書No・リンク先・Copyflag4 は書かない');
 
-  assert.ok(isDate(w.file1.get(2, 19)));
+  assert.ok(isStamp(w.file1.get(2, 19)));
   gas.onFormSubmitV08({ range: w.file1.getRange(2, 1) });
   assert.strictEqual(w.file2.getLastRow(), 5, '同じ行は二重に書かない');
 });
@@ -266,7 +281,7 @@ test('GAS_Sec：File2→File3（期・月のシート、数式の列は触らな
   assert.match(alerts[0], /File2 → File3：1 件/);
   same(w.file3Nov.cells[4].slice(0, 9), [11, 8, '岐阜市', '元請', '同業者', 'とび', '市役所前町', '東谷', 100000]);
   assert.strictEqual(w.file3Nov.formulas['5,11'], '=I5+J5');
-  assert.ok(isDate(w.file2.get(5, 11)));
+  assert.ok(isStamp(w.file2.get(5, 11)));
   assert.strictEqual(w.file2.get(4, 11), '2026/10/27 21:33:46', '既存のコピー済み行はそのまま');
 });
 
@@ -281,7 +296,7 @@ test('GAS_Sec：100万円未満は File5 だけ、Copyflag4 を付ける', () =>
   same([w.file5.get(5, 3), w.file5.get(5, 4), w.file5.get(5, 11), w.file5.get(5, 17), w.file5.get(5, 18)], ['2616311', '015', '美江寺交差点歩道', '○', '○']);
   assert.strictEqual(w.file5.get(5, 19), '', 'File5 は R列まで');
   assert.strictEqual(w.file6.getLastRow(), 15, 'File6 には書かない');
-  assert.ok(isDate(w.file4.get(6, 21)));
+  assert.ok(isStamp(w.file4.get(6, 21)));
 });
 
 test('GAS_Sec：100万円以上は File6 の A〜F 列にも書く（G列以降は触らない）', () => {
@@ -293,7 +308,7 @@ test('GAS_Sec：100万円以上は File6 の A〜F 列にも書く（G列以降�
   gas.nightlyCopyV08();
   // File6：データ2行（8〜9行目）の下の10行目
   same(w.file6.cells[9].slice(0, 11), ['2616311', '015', '東谷', '岐阜市', '美江寺交差点歩道', 2500000, '作成', '', '経理保管', '', '経理保管']);
-  assert.ok(isDate(w.file4.get(6, 21)));
+  assert.ok(isStamp(w.file4.get(6, 21)));
 });
 
 test('GAS_Sec：File6 に同じ指示書No・連番があれば二重に書かない', () => {
@@ -349,7 +364,7 @@ test('GAS_Sec：File7 の見出し（2行目）より下に書き、現場詳細
   same(w.file7.cells[4].slice(0, 7), ['2616311', '015', '東谷', '岐阜市', '美江寺交差点歩道', '2026/12/12', '横断歩道\n歩道路側帯']);
   assert.strictEqual(w.file7.wraps['5,7'], true);
   same(w.file7.resized, [[5, 1]]);
-  assert.ok(isDate(w.file4.get(6, 21)));
+  assert.ok(isStamp(w.file4.get(6, 21)));
 });
 
 test('GAS_Sec：File7 のシートが無ければ Copyflag4 を付けず、File5 にも書かない', () => {
@@ -381,7 +396,7 @@ test('GAS_Sec：途中で止まった行をやり直しても File6・File7 は�
   assert.strictEqual(w.file6.getLastRow(), rows6, 'File6 が二重');
   assert.strictEqual(w.file7.getLastRow(), rows7, 'File7 が二重');
   assert.strictEqual(w.file5.getLastRow(), 5);
-  assert.ok(isDate(w.file4.get(6, 21)));
+  assert.ok(isStamp(w.file4.get(6, 21)));
 });
 
 test('書込み行は見出し行より下だけを探す（上に空行がある新しいシート）', () => {
@@ -393,6 +408,41 @@ test('書込み行は見出し行より下だけを探す（上に空行があ�
   gas.menuCopyV08();
   assert.strictEqual(w.file6.get(8, 3), '東谷', '見出し（7行目）の次の8行目');
   assert.strictEqual(w.file6.get(2, 3), '');
+});
+
+test('タイムゾーンが米国のファイルでも、日付・Copyflag は日本時間どおりに書く（11/13 18:12 送信）', () => {
+  const w = buildWorld();
+  ['F4', 'F5', 'F6', 'F7'].forEach(id => { w.files.find(f => f.id === id).tz = 'America/Los_Angeles'; });
+  w.files.find(f => f.id === 'F1').tz = 'Asia/Dili';
+  const { gas, alerts } = loadGas(w, 'SET');
+  w.file1.cells[1] = formRow({ 0: new Date(2026, 10, 13, 18, 12, 46), [C1.amount]: '1300000' });
+  gas.onFormSubmitV08({ range: w.file1.getRange(2, 1) });
+  same([w.file2.get(5, 1), w.file2.get(5, 2), w.file2.get(5, 10)], [11, 13, 2026]);
+  assert.strictEqual(w.file4.get(6, 2), '2026/11/13', 'File4 の日付が11/12にずれた');
+  assert.ok(isStamp(w.file1.get(2, 19)));
+  gas.menuCopyV08();
+  assert.match(alerts[0], /v08-File7対応/);
+  assert.strictEqual(w.file5.get(5, 2), '2026/11/13');
+  same(w.file7.cells[4].slice(0, 7), ['', '', '東谷', '岐阜市', '美江寺交差点歩道', '2026/12/12', '横断歩道\n歩道路側帯']);
+  assert.ok(isStamp(w.file4.get(6, 21)));
+});
+
+test('取り戻し：File7 だけ抜けた行は Copyflag4 を消して「コピー実行」すれば File7 だけに書かれる', () => {
+  const w = buildWorld();
+  ['F4', 'F5', 'F6', 'F7'].forEach(id => { w.files.find(f => f.id === id).tz = 'America/Los_Angeles'; });
+  // 古い版で File5・File6 にだけ書かれ、Copyflag4 が付いた状態を作る（日付は実物と同じく日付型）
+  const d = new Date(2026, 10, 13);
+  const row4 = ['', d, '', '', '東谷', '岐阜県警契約課', '岐阜太郎', '25日', '', '岐阜県薮田1-1-1', '岐阜薮田交差点', '2026/12/30', '', '', '', '各務原市役所工事部', '○', '○', 1300000, '１．45cm幅\n２．横断歩道 30m', ''];
+  w.file4.cells.push(row4.slice());
+  w.file5.cells.push(row4.slice(0, 18));
+  w.file6.cells[9] = ['', '', '東谷', '岐阜県警契約課', '岐阜薮田交差点', 1300000, '作成', '', '経理保管', '', '経理保管'];
+  const rows5 = w.file5.getLastRow(), rows6 = w.file6.getLastRow();
+  const { gas } = loadGas(w, 'SET');
+  gas.menuCopyV08();
+  assert.strictEqual(w.file5.getLastRow(), rows5, 'File5 が二重');
+  assert.strictEqual(w.file6.getLastRow(), rows6, 'File6 が二重');
+  same(w.file7.cells[4].slice(2, 7), ['東谷', '岐阜県警契約課', '岐阜薮田交差点', '2026/12/30', '１．45cm幅\n２．横断歩道 30m']);
+  assert.ok(isStamp(w.file4.get(6, 21)));
 });
 
 let failed = 0;

@@ -8,11 +8,13 @@
  *  フォームから File1 に行が追加されたら、その行を File2（確認_受注一覧）と
  *  File4（確認_工事インデックス）の空いた行へ書き込み、両方に書けたら Copyflag1 に日時を入れる。
  *
- * 【GAS_Sec】File2 → File3、File4 → File5・File6
+ * 【GAS_Sec】File2 → File3、File4 → File5・File6・File7
  *  メニュー「カスタムメニュー ＞ コピー実行」、または毎日深夜1時台に、
  *  Copyflag2・Copyflag4 が空の行を本番へ書き込み、書けた行の Copyflag に日時を入れる。
  *  File3 は「27期11月」のような期と月のシートへ（期は7月始まり）。
  *  当初受注金額が 1,000,000 以上の行は File6（注文書・注文請書チェックリスト）へも書く。
+ *  File7（工事現場詳細）へは毎回書き、現場詳細の列は折り返して行の高さを内容に合わせる。
+ *  Copyflag4 は File5・File6（対象の行のみ）・File7 がすべて書けたときに付ける。
  *
  * 【設置】このコードを設定ファイルの Apps Script に貼り、setupTriggers を1回実行する（README.md 参照）。
  */
@@ -35,6 +37,10 @@ const FILE6_MIN_AMOUNT = 1000000;
 // 書込み行：判定する列（A列から）が空の行で、その下2行も空の最初の行
 const BLANK_COLS_DEFAULT = 8;   // H列まで
 const BLANK_COLS_FILE6 = 6;     // File6 は F列まで
+const BLANK_COLS_FILE7 = 7;     // File7 は G列まで
+
+// File7 で折り返して行の高さを合わせる列の名前
+const WRAP_FIELD_FILE7 = '現場詳細';
 const BLANK_ROWS_BELOW = 2;
 const SEARCH_START_ROW = 2;
 
@@ -94,11 +100,16 @@ function checkSettings() {
   const cfg = loadConfig_();
   const lines = [`設定ファイル：${cfg.settingsName}`];
 
-  [1, 2, 3, 4, 5, 6].forEach(n => {
+  fileNumbers_(cfg).forEach(n => {
     const f = cfg.files[n];
     const ss = openFile_(cfg, n);
     lines.push(`■ File${n}：${f.file}（${f.drive}）→ ${ss.getUrl()}`);
-    if (n !== 3) lines.push(`   シート：${sheetOf_(ss, f).getName()}`);
+    if (n !== 3) {
+      const sheet = sheetOf_(ss, f);
+      const head = findNamesRow_(sheet, f);
+      lines.push(`   シート：${sheet.getName()}／見出し：${head}行目` +
+        (n === 1 ? '' : `／次の書込み行：${findWriteRow_(sheet, blankColsOf_(n), head + 1)}行目`));
+    }
     if (f.fields.length) {
       lines.push('   ' + f.fields.map(x =>
         `${columnLetter_(x.dest)}:${x.name}←${x.sources.length ? x.sources.map(columnLetter_).join(',') : '（規則）'}`).join('  '));
@@ -175,7 +186,7 @@ function processFormRow_(cfg, file1Sheet, row) {
       .filter(x => x.name !== f.flagName)
       .map(x => ({ col: x.dest, value: convertFormValue_(x, values, cfg) }))
       .filter(c => c.value !== undefined);
-    writeCells_(sheet, findWriteRow_(sheet, BLANK_COLS_DEFAULT), cells);
+    writeCells_(sheet, findWriteRow_(sheet, BLANK_COLS_DEFAULT, findNamesRow_(sheet, f) + 1), cells);
   });
 
   file1Sheet.getRange(row, f1.flagCol).setValue(new Date()).setNumberFormat(FLAG_FORMAT);
@@ -301,30 +312,53 @@ function copyFile2_(cfg) {
   return eachPendingRow_(cfg, 2, f3.fields, (values) => {
     const sheet = requireSheet_(file3, periodSheetName_(values[yearCol - 1], values[monthCol - 1]));
     const cells = f3.fields.map(x => ({ col: x.dest, value: values[x.sources[0] - 1] }));
-    writeCells_(sheet, findWriteRow_(sheet, BLANK_COLS_DEFAULT), cells);
+    writeCells_(sheet, findWriteRow_(sheet, BLANK_COLS_DEFAULT, findNamesRow_(sheet, f3) + 1), cells);
   }, 'File2 → File3');
 }
 
 /**
- * File4 の Copyflag4 が空の行を File5 へ、当初受注金額が基準以上なら File6 へも書く
- * File5・File6 の両方（File6 が対象外なら File5 だけ）に書けたときに Copyflag4 を付ける
+ * File4 の Copyflag4 が空の行を File5・File7 へ、当初受注金額が基準以上なら File6 へも書く
+ * すべて（File6 は対象の行だけ）書けたときに Copyflag4 を付ける。
+ * 途中で止まった行を次回やり直しても二重にならないよう、File6・File7 は同じ行があれば書かず、
+ * File5 は最後に書く
  */
 function copyFile4_(cfg) {
 
-  const f4 = cfg.files[4], f5 = cfg.files[5], f6 = cfg.files[6];
+  const f4 = cfg.files[4], f5 = cfg.files[5], f6 = cfg.files[6], f7 = cfg.files[7];
   const sheet5 = sheetOf_(openFile_(cfg, 5), f5);
   const sheet6 = sheetOf_(openFile_(cfg, 6), f6);
+  const sheet7 = f7 ? sheetOf_(openFile_(cfg, 7), f7) : null;
+  const head5 = findNamesRow_(sheet5, f5), head6 = findNamesRow_(sheet6, f6);
+  const head7 = sheet7 ? findNamesRow_(sheet7, f7) : 0;
   const amountCol = f4.colByName['当初受注金額'];
+  const targets = f5.fields.concat(f6.fields, f7 ? f7.fields : []);
 
-  return eachPendingRow_(cfg, 4, f5.fields.concat(f6.fields), (values) => {
+  return eachPendingRow_(cfg, 4, targets, (values) => {
     if (toNumber_(values[amountCol - 1]) >= FILE6_MIN_AMOUNT) {
       const cells6 = f6.fields.map(x => ({ col: x.dest, value: amountOrValue_(f4, x.sources[0], values) }));
-      // 前回 File6 だけ書けて File5 で止まった行を、二重に書かない
-      if (!existsInFile6_(sheet6, cells6)) writeCells_(sheet6, findWriteRow_(sheet6, BLANK_COLS_FILE6), cells6);
+      if (!rowExists_(sheet6, head6, cells6)) writeCells_(sheet6, findWriteRow_(sheet6, BLANK_COLS_FILE6, head6 + 1), cells6);
+    }
+    if (sheet7) {
+      const cells7 = f7.fields.map(x => ({ col: x.dest, value: values[x.sources[0] - 1] }));
+      if (!rowExists_(sheet7, head7, cells7)) {
+        const row7 = findWriteRow_(sheet7, BLANK_COLS_FILE7, head7 + 1);
+        writeCells_(sheet7, row7, cells7);
+        fitWrappedRow_(sheet7, row7, f7.colByName[WRAP_FIELD_FILE7]);
+      }
     }
     const cells5 = f5.fields.map(x => ({ col: x.dest, value: values[x.sources[0] - 1] }));
-    writeCells_(sheet5, findWriteRow_(sheet5, BLANK_COLS_DEFAULT), cells5);
-  }, 'File4 → File5・File6');
+    writeCells_(sheet5, findWriteRow_(sheet5, BLANK_COLS_DEFAULT, head5 + 1), cells5);
+  }, f7 ? 'File4 → File5・File6・File7' : 'File4 → File5・File6');
+}
+
+/**
+ * 現場詳細の列を折り返し表示にし、行の高さを内容に合わせる
+ */
+function fitWrappedRow_(sheet, row, col) {
+  if (!col) return;
+  sheet.getRange(row, col).setWrap(true).setVerticalAlignment('top');
+  SpreadsheetApp.flush();
+  sheet.autoResizeRows(row, 1);
 }
 
 /**
@@ -368,15 +402,23 @@ function amountOrValue_(f, col, values) {
 }
 
 /**
- * File6 に同じ指示書No・連番の行があるか（指示書No が空なら判定しない）
+ * 書こうとしている行が、見出しより下にすでにあるか
+ * 指示書No（A列）があれば 指示書No・連番（A・B列）で、空なら書く列すべての値で比べる
  */
-function existsInFile6_(sheet, cells) {
-  const key = cells.filter(c => c.col <= 2).sort((a, b) => a.col - b.col).map(c => String(c.value).trim());
-  if (key.length < 2 || key[0] === '') return false;
+function rowExists_(sheet, headRow, cells) {
   const last = sheet.getLastRow();
-  if (last < 1) return false;
-  return sheet.getRange(1, 1, last, 2).getDisplayValues()
-    .some(r => String(r[0]).trim() === key[0] && String(r[1]).trim() === key[1]);
+  if (last <= headRow) return false;
+  const width = Math.max(...cells.map(c => c.col));
+  const rows = sheet.getRange(headRow + 1, 1, last - headRow, width).getValues();
+  const keyOf = v => {
+    if (Object.prototype.toString.call(v) === '[object Date]') return isNaN(v) ? '' : String(v.getTime());
+    const n = toNumber_(v);
+    return typeof n === 'number' ? String(n) : normalize_(v);
+  };
+  const byNo = cells.filter(c => c.col <= 2);
+  const useNo = byNo.length === 2 && keyOf(cells.find(c => c.col === 1).value) !== '';
+  const compare = useNo ? byNo : cells;
+  return rows.some(r => compare.every(c => keyOf(r[c.col - 1]) === keyOf(c.value)));
 }
 
 /**
@@ -401,18 +443,45 @@ function resultMessage_(result) {
 /**
  * 書込み行を探す：A列から blankCols 列が空（値も数式も無い）の行で、その下2行も空の最初の行
  */
-function findWriteRow_(sheet, blankCols) {
+function findWriteRow_(sheet, blankCols, startRow) {
 
-  const last = Math.max(sheet.getLastRow(), SEARCH_START_ROW);
-  const height = last - SEARCH_START_ROW + 2 + BLANK_ROWS_BELOW;
-  ensureRows_(sheet, SEARCH_START_ROW + height - 1);
+  const start = Math.max(startRow || SEARCH_START_ROW, SEARCH_START_ROW);
+  const last = Math.max(sheet.getLastRow(), start);
+  const height = last - start + 2 + BLANK_ROWS_BELOW;
+  ensureRows_(sheet, start + height - 1);
 
-  const range = sheet.getRange(SEARCH_START_ROW, 1, height, blankCols);
+  const range = sheet.getRange(start, 1, height, blankCols);
   const values = range.getValues();
   const formulas = range.getFormulas();
   const blank = values.map((r, i) => r.every((v, j) => isBlank_(v) && formulas[i][j] === ''));
 
-  return SEARCH_START_ROW + findBlankRun_(blank, BLANK_ROWS_BELOW + 1);
+  return start + findBlankRun_(blank, BLANK_ROWS_BELOW + 1);
+}
+
+/**
+ * 見出し行を探す：上から15行のうち、設定ファイルの列名が半分以上（2つ以上）並んでいる最初の行
+ * 見つからなければ 1（1行目を見出しとみなす）
+ */
+function findNamesRow_(sheet, f) {
+  const fields = f.fields.length ? f.fields : Object.keys(f.namesByCol).map(c => ({ dest: Number(c), name: f.namesByCol[c] }));
+  const named = fields.filter(x => x.name && x.name !== '---');
+  if (!named.length) return 1;
+  const scan = Math.min(sheet.getLastRow(), 15);
+  if (scan < 1) return 1;
+  const width = Math.max(...named.map(x => x.dest));
+  const rows = sheet.getRange(1, 1, scan, width).getDisplayValues();
+  const key = v => normalize_(v).replace(/[.．\s]/g, '');
+  const need = Math.max(2, Math.ceil(named.length / 2));
+  const i = rows.findIndex(r => named.filter(x => key(r[x.dest - 1]) === key(x.name)).length >= need);
+  return i >= 0 ? i + 1 : 1;
+}
+
+function blankColsOf_(n) {
+  return n === 6 ? BLANK_COLS_FILE6 : n === 7 ? BLANK_COLS_FILE7 : BLANK_COLS_DEFAULT;
+}
+
+function fileNumbers_(cfg) {
+  return Object.keys(cfg.files).map(Number).sort((a, b) => a - b);
 }
 
 /**
@@ -514,6 +583,7 @@ function parseSettings_(rows) {
     files[n] = f;
   });
 
+  // File1〜6 は必須、File7（工事現場詳細）は書いてあれば使う
   [1, 2, 3, 4, 5, 6].forEach(n => {
     if (!files[n]) throw new Error(`設定ファイルに「File${n}」の行がありません`);
   });

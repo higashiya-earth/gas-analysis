@@ -25,40 +25,7 @@ class Sheet {
     this.formats = {};
     this.wraps = {};
     this.resized = [];
-    this.maxCols = 24;
-    this.heights = {};
-    this.widths = {};
-    this.hiddenCols = {};
-    this.frozen = [0, 0];
-    this.gridHidden = false;
-    this.cfRules = 0;
   }
-  getMaxColumns() { return this.maxCols; }
-  getLastColumn() { return Math.max(1, ...this.cells.map(r => r.length)); }
-  clear() { this.cells = []; this.formulas = {}; this.formats = {}; }
-  clearConditionalFormatRules() { this.cfRules = 0; }
-  setFrozenRows(n) { this.frozen[0] = n; }
-  setFrozenColumns(n) { this.frozen[1] = n; }
-  getFrozenRows() { return this.frozen[0]; }
-  getFrozenColumns() { return this.frozen[1]; }
-  hasHiddenGridlines() { return this.gridHidden; }
-  setHiddenGridlines(b) { this.gridHidden = b; }
-  deleteRows(start, n) {
-    this.cells.splice(start - 1, n);
-    this.maxRows -= n;
-    const h = {};
-    Object.keys(this.heights).forEach(k => { if (k < start) h[k] = this.heights[k]; else if (k >= start + n) h[k - n] = this.heights[k]; });
-    this.heights = h;
-  }
-  insertColumnsAfter(after, n) { this.maxCols += n; }
-  getRowHeight(r) { return this.heights[r] || 21; }
-  setRowHeights(start, n, h) {
-    if (start + n - 1 > this.maxRows) throw new Error(`範囲外：${this.name} 行の高さ ${start + n - 1}行`);
-    for (let i = 0; i < n; i++) this.heights[start + i] = h;
-  }
-  isColumnHiddenByUser(c) { return !!this.hiddenCols[c]; }
-  hideColumns(c) { this.hiddenCols[c] = true; }
-  showColumns(c) { delete this.hiddenCols[c]; }
   autoResizeRows(start, n) { this.resized.push([start, n]); }
   getName() { return this.name; }
   getParent() { return this.parent || { getSpreadsheetTimeZone: () => 'Asia/Tokyo' }; }
@@ -96,22 +63,8 @@ class Sheet {
       setNumberFormat(f) { sheet.formats[`${r},${c}`] = f; return this; },
       setWrap(w) { sheet.wraps[`${r},${c}`] = w; return this; },
       setVerticalAlignment() { return this; },
-      breakApart() { return this; },
-      clearDataValidations() { return this; },
-      clearContent() { for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) sheet.set(r + i, c + j, ''); return this; },
-      copyTo(dest, type) {
-        const d = dest.getSheet(), dr = dest.getRow(), dc = dest.getColumn();
-        if (type === 'PASTE_COLUMN_WIDTHS') { for (let j = 0; j < nc; j++) d.widths[dc + j] = sheet.widths[c + j] || 100; return; }
-        if (dr + nr - 1 > d.maxRows) throw new Error(`範囲外：${d.name} 貼り付け ${dr + nr - 1}行`);
-        for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) {
-          d.set(dr + i, dc + j, sheet.get(r + i, c + j));
-          const fm = sheet.formats[`${r + i},${c + j}`];
-          if (fm) d.formats[`${dr + i},${dc + j}`] = fm;
-        }
-      },
       getSheet: () => sheet,
-      getRow: () => r,
-      getColumn: () => c
+      getRow: () => r
     };
   }
 }
@@ -124,7 +77,6 @@ class Spreadsheet {
   getUrl() { return `https://docs.google.com/spreadsheets/d/${this.id}`; }
   getSheets() { this.sheets.forEach(s => { s.parent = this; }); return this.sheets; }
   getSheetByName(n) { const s = this.getSheets().find(x => x.name === n); return s || null; }
-  insertSheet(name, index) { const s = new Sheet(name, []); this.sheets.splice(index, 0, s); s.parent = this; return s; }
 }
 
 // ===== 実際の設定ファイル_v08 の内容（2026-11-13 時点、File1〜File7） =====
@@ -213,7 +165,6 @@ function loadGas(world, activeId, props = {}) {
     SpreadsheetApp: {
       openById: byId,
       flush: () => {},
-      CopyPasteType: { PASTE_COLUMN_WIDTHS: 'PASTE_COLUMN_WIDTHS' },
       getActiveSpreadsheet: () => (activeId ? byId(activeId) : null),
       getUi: () => ({ alert: m => alerts.push(m), createMenu: () => ({ addItem() { return this; }, addToUi() {} }) })
     },
@@ -235,7 +186,7 @@ function loadGas(world, activeId, props = {}) {
       getProjectTriggers: () => triggers.slice(),
       deleteTrigger: t => triggers.splice(triggers.indexOf(t), 1),
       newTrigger: fn => {
-        const b = { forSpreadsheet: () => b, onFormSubmit: () => b, timeBased: () => b, atHour: () => b, everyDays: () => b, everyHours: () => b, inTimezone: () => b,
+        const b = { forSpreadsheet: () => b, onFormSubmit: () => b, timeBased: () => b, atHour: () => b, everyDays: () => b, inTimezone: () => b,
           create: () => triggers.push({ getHandlerFunction: () => fn }) };
         return b;
       }
@@ -388,7 +339,7 @@ test('setupTriggers：設定ファイルを覚え、トリガーは1組だけ', 
   const first = loadGas(w, 'SET', props);
   first.gas.setupTriggers();
   first.gas.setupTriggers();
-  same(first.triggers.map(t => t.getHandlerFunction()), ['onFormSubmitV08', 'nightlyCopyV08', 'refreshSiteSheetV08']);
+  same(first.triggers.map(t => t.getHandlerFunction()), ['onFormSubmitV08', 'nightlyCopyV08']);
   assert.strictEqual(props.SETTINGS_FILE_ID_V08, 'SET');   // コードのIDで開いた設定ファイル
   const { gas } = loadGas(w, null, props);
   gas.onFormSubmitV08({ range: w.file1.getRange(2, 1) });
@@ -470,7 +421,7 @@ test('タイムゾーンが米国のファイルでも、日付・Copyflag は�
   assert.strictEqual(w.file4.get(6, 2), '2026/11/13', 'File4 の日付が11/12にずれた');
   assert.ok(isStamp(w.file1.get(2, 19)));
   gas.menuCopyV08();
-  assert.match(alerts[0], /v08-サイト表示対応/);
+  assert.match(alerts[0], /v08-File7対応/);
   assert.strictEqual(w.file5.get(5, 2), '2026/11/13');
   same(w.file7.cells[4].slice(0, 7), ['', '', '東谷', '岐阜市', '美江寺交差点歩道', '2026/12/12', '横断歩道\n歩道路側帯']);
   assert.ok(isStamp(w.file4.get(6, 21)));
@@ -492,77 +443,6 @@ test('取り戻し：File7 だけ抜けた行は Copyflag4 を消して「コピ
   assert.strictEqual(w.file6.getLastRow(), rows6, 'File6 が二重');
   same(w.file7.cells[4].slice(2, 7), ['東谷', '岐阜県警契約課', '岐阜薮田交差点', '2026/12/30', '１．45cm幅\n２．横断歩道 30m']);
   assert.ok(isStamp(w.file4.get(6, 21)));
-});
-
-// ===== サイト表示 =====
-
-// 実物と同じ形：1行目が見出し（A1＝w）、2〜3行目が空、4行目からデータ
-function siteWorld() {
-  const w = buildWorld();
-  const row = (no, seq, name) => ['', '2026/11/02', no, seq, '加藤', 'メイラ', '林', '随時', '作業指示書', '', name, '', '', '', '', '', '', ''];
-  const head = INDEX_HEADER.slice(0, 18); head[0] = 'w';
-  w.file5.cells = [head, [], [], row('2612510', '001', '10月の工事1'), row('2663410', '002', '10月の工事2'),
-    row('2661511', '001', '11月の工事1'), row('', '', 'テスト'), row('2600011', '002', '11月の工事2')];
-  w.file5.formats['1,2'] = 'bold';
-  w.file5.formats['6,9'] = 'link';
-  w.file5.widths = { 1: 20, 2: 90, 11: 300 };
-  w.file5.heights = { 1: 40, 6: 30 };
-  w.file5.frozen = [1, 0];
-  w.file5.gridHidden = true;
-  w.file5.hiddenCols = { 13: true };
-  return w;
-}
-
-test('サイト表示：★の行から下を、見出し・書式・幅・高さごと写し、×の行は除く', () => {
-  const w = siteWorld();
-  w.file5.set(6, 1, '★');
-  w.file5.set(7, 1, '×');
-  const { gas, alerts } = loadGas(w, 'SET');
-  gas.menuUpdateSiteV08();
-  const site = w.files.find(f => f.id === 'F5').getSheetByName('サイト表示');
-  assert.ok(site, 'サイト表示が作られていない');
-  assert.strictEqual(w.files.find(f => f.id === 'F5').getSheets()[1], site, '工事Index の右に作る');
-  same(site.cells.map(r => r[10] || ''), ['工事名', '', '', '11月の工事1', '11月の工事2']);
-  assert.strictEqual(site.get(1, 1), 'w');
-  assert.strictEqual(site.get(4, 1), '', '★ は表示しない');
-  assert.strictEqual(w.file5.get(6, 1), '★', '元の ★ は消さない');
-  same([site.formats['1,2'], site.formats['4,9']], ['bold', 'link']);
-  same([site.widths[1], site.widths[11]], [20, 300]);
-  same([site.heights[1], site.heights[4], site.heights[5]], [40, 30, 21]);
-  same([site.frozen[0], site.gridHidden, site.isColumnHiddenByUser(13)], [1, true, true]);
-  assert.strictEqual(site.getMaxRows(), 5 + 10);
-  assert.match(alerts[0], /6行目から 2行を表示（× の 1行は除外）/);
-});
-
-test('サイト表示：★が無ければ最初のデータ行から。行が減っても前の内容・高さが残らない', () => {
-  const w = siteWorld();
-  const { gas } = loadGas(w, 'SET');
-  gas.refreshSiteSheetV08();
-  const site = w.files.find(f => f.id === 'F5').getSheetByName('サイト表示');
-  same(site.cells.map(r => r[10] || ''), ['工事名', '', '', '10月の工事1', '10月の工事2', '11月の工事1', 'テスト', '11月の工事2']);
-  same([site.heights[6], site.heights[4]], [30, 21]);
-
-  w.file5.set(8, 1, '★');
-  gas.refreshSiteSheetV08();
-  same(site.cells.map(r => r[10] || ''), ['工事名', '', '', '11月の工事2']);
-  same([site.heights[4], site.heights[6]], [21, 21]);
-  assert.strictEqual(site.getMaxRows(), 4 + 10);
-});
-
-test('サイト表示：File5 のシート名が空でも、コピーは「サイト表示」ではなく工事Index へ書く', () => {
-  const w = siteWorld();
-  const f5 = w.files.find(f => f.id === 'F5');
-  f5.sheets.unshift(new Sheet('サイト表示', []));
-  const { gas, alerts, triggers } = loadGas(w, 'SET');
-  w.file1.cells[1] = formRow({ 0: new Date(2026, 10, 14, 9, 0, 0) });
-  gas.onFormSubmitV08({ range: w.file1.getRange(2, 1) });
-  gas.menuCopyV08();
-  assert.strictEqual(w.file5.get(9, 11), '美江寺交差点歩道', '工事Index に書かれていない');
-  const site = f5.getSheetByName('サイト表示');
-  assert.strictEqual(site.cells[site.cells.length - 1][10], '美江寺交差点歩道', 'コピー実行のあとサイト表示も更新');
-  assert.match(alerts[0], /サイト表示：4行目から 6行を表示/);
-  gas.setupTriggers();
-  same(triggers.map(t => t.getHandlerFunction()), ['onFormSubmitV08', 'nightlyCopyV08', 'refreshSiteSheetV08']);
 });
 
 let failed = 0;

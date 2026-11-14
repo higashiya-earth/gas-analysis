@@ -16,10 +16,6 @@
  *  File7（工事現場詳細）へは毎回書き、現場詳細の列は折り返して行の高さを内容に合わせる。
  *  Copyflag4 は File5・File6（対象の行のみ）・File7 がすべて書けたときに付ける。
  *
- * 【サイト表示】File5 の工事Index を、見た目（書式・列の幅・行の高さ・リンク）ごと
- *  シート「サイト表示」へ写す。A列に「★」がある行から下だけを写し、「×」の行は写さない。
- *  コピー実行・深夜のあと、毎時、メニュー「サイト表示を更新」で更新。Googleサイトにはこのシートを埋め込む。
- *
  * 【設置】このコードを設定ファイルの Apps Script に貼り、setupTriggers を1回実行する（README.md 参照）。
  */
 
@@ -31,7 +27,7 @@
 const SETTINGS_FILE_ID = '1NJEMrTL5u0Zs29uAnvP-1I7R_Z3Qn8MTWxIFHonu-Jc';
 
 // この GAS の版。メニューの結果表示と「設定の確認」に出るので、貼り替えたコードが動いているか確かめられる
-const SCRIPT_VERSION = 'v08-サイト表示対応 2026-11-14';
+const SCRIPT_VERSION = 'v08-File7対応 2026-11-13b';
 const SETTINGS_ID_PROPERTY = 'SETTINGS_FILE_ID_V08';
 
 const SETTINGS_SHEET_NAME = '設定ファイル';
@@ -56,14 +52,7 @@ const NIGHTLY_HOUR = 1;
 const TIMEZONE = 'Asia/Tokyo';
 const FLAG_FORMAT = 'yyyy/MM/dd HH:mm:ss';
 const LOCK_WAIT_MS = 30000;
-const TRIGGER_FUNCTIONS = ['onFormSubmitV08', 'nightlyCopyV08', 'refreshSiteSheetV08'];
-
-// サイト表示（File5 と同じファイルの中に作る表示用シート）
-const SITE_SHEET_NAME = 'サイト表示';
-const SITE_START_MARK = '★';   // A列にこの印がある行から下を表示
-const SITE_HIDE_MARK = '×';    // A列にこの印がある行は表示しない
-const SITE_SPARE_ROWS = 10;     // 表示用シートの下に残す空行
-const SITE_REFRESH_HOURS = 1;   // 何時間ごとに更新するか
+const TRIGGER_FUNCTIONS = ['onFormSubmitV08', 'nightlyCopyV08'];
 
 
 // ===== 設置・確認用（手動実行） =====
@@ -95,12 +84,7 @@ function setupTriggers() {
     .inTimezone(TIMEZONE)
     .create();
 
-  ScriptApp.newTrigger('refreshSiteSheetV08')
-    .timeBased()
-    .everyHours(SITE_REFRESH_HOURS)
-    .create();
-
-  console.log(`トリガーを作成しました。設定：${cfg.settingsName}／フォーム送信：${file1.getName()}／毎日 ${NIGHTLY_HOUR}時台：コピー実行／${SITE_REFRESH_HOURS}時間ごと：サイト表示を更新`);
+  console.log(`トリガーを作成しました。設定：${cfg.settingsName}／フォーム送信：${file1.getName()}／毎日 ${NIGHTLY_HOUR}時台：コピー実行`);
 }
 
 /**
@@ -293,7 +277,6 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('カスタムメニュー')
     .addItem('コピー実行', 'menuCopyV08')
-    .addItem('サイト表示を更新', 'menuUpdateSiteV08')
     .addItem('設定の確認', 'menuCheckSettingsV08')
     .addToUi();
 }
@@ -319,8 +302,7 @@ function menuCopyV08() {
   try {
     const message = withLock_(() => {
       const cfg = loadConfig_();
-      const results = [copyFile2_(cfg), copyFile4_(cfg)].map(resultMessage_);
-      return [`（GAS ${SCRIPT_VERSION}）`].concat(results, [siteMessage_(cfg).text]).join('\n\n');
+      return [`（GAS ${SCRIPT_VERSION}）`].concat([copyFile2_(cfg), copyFile4_(cfg)].map(resultMessage_)).join('\n\n');
     });
     ui.alert(message);
   } catch (err) {
@@ -336,9 +318,7 @@ function nightlyCopyV08() {
   try {
     const messages = withLock_(() => {
       const cfg = loadConfig_();
-      const errors = [copyFile2_(cfg), copyFile4_(cfg)].filter(r => r.errors.length).map(resultMessage_);
-      const site = siteMessage_(cfg);
-      return site.ok ? errors : errors.concat(site.text);
+      return [copyFile2_(cfg), copyFile4_(cfg)].filter(r => r.errors.length).map(resultMessage_);
     });
     if (messages.length) notifyError_('GAS_Sec（深夜のコピー実行）でコピーできない行がありました', new Error(messages.join('\n\n')));
   } catch (err) {
@@ -485,143 +465,6 @@ function resultMessage_(result) {
   const lines = [`${result.label}：${result.copied} 件コピーしました。`];
   if (result.errors.length) lines.push('コピーできなかった行：', ...result.errors);
   return lines.join('\n');
-}
-
-
-// ===== サイト表示：File5（工事Index）→ シート「サイト表示」 =====
-
-/**
- * メニュー「サイト表示を更新」
- */
-function menuUpdateSiteV08() {
-  const ui = SpreadsheetApp.getUi();
-  try {
-    ui.alert(withLock_(() => siteMessage_(loadConfig_()).text));
-  } catch (err) {
-    ui.alert(`サイト表示を更新できませんでした。\n${err.message}`);
-  }
-}
-
-/**
- * 毎時トリガー：A列の ★・× を付け替えたときも、1時間以内にサイトへ反映する
- */
-function refreshSiteSheetV08() {
-  try {
-    withLock_(() => updateSiteSheet_(loadConfig_()));
-  } catch (err) {
-    notifyError_('サイト表示の更新でエラー', err);
-    throw err;
-  }
-}
-
-/**
- * サイト表示を更新し、結果の文を返す（失敗してもコピーの結果は残すため、例外は文にする）
- */
-function siteMessage_(cfg) {
-  try {
-    const r = updateSiteSheet_(cfg);
-    return { ok: true, text: `サイト表示：${r.from}行目から ${r.rows}行を表示` + (r.hidden ? `（× の ${r.hidden}行は除外）` : '') };
-  } catch (err) {
-    return { ok: false, text: `サイト表示を更新できませんでした：${err.message}` };
-  }
-}
-
-/**
- * File5 の工事Index を、見た目ごと「サイト表示」シートへ写す
- *  ・見出し（見出し行から最初のデータ行の手前まで）はそのまま
- *  ・A列に ★ がある行から下（★ が無ければ最初のデータ行から）を写し、A列が × の行は写さない
- *  ・書式・リンク・列の幅・行の高さ・固定行・枠線の表示・非表示の列も同じにする
- *  ・★ の印は表示しない
- * シートは作り直さず中身だけ入れ替えるので、「ウェブに公開」の埋め込みはそのまま使える
- */
-function updateSiteSheet_(cfg) {
-
-  const f5 = cfg.files[5];
-  const ss = openFile_(cfg, 5);
-  const src = sheetOf_(ss, f5);
-  const dst = ss.getSheetByName(SITE_SHEET_NAME) || ss.insertSheet(SITE_SHEET_NAME, ss.getSheets().length);
-  if (dst.getName() === src.getName()) throw new Error(`File5 のシート名が「${SITE_SHEET_NAME}」になっています`);
-
-  const head = findNamesRow_(src, f5);
-  const last = Math.max(src.getLastRow(), head);
-  const cols = src.getMaxColumns();
-
-  // 写す行を決める
-  const body = last > head ? src.getRange(head + 1, 1, last - head, cols).getDisplayValues() : [];
-  const marks = body.map(r => String(r[0]).trim());
-  const firstData = body.findIndex(r => r.slice(1).some(v => v !== ''));
-  const topEnd = head + Math.max(firstData, 0);
-  const star = marks.indexOf(SITE_START_MARK);
-  const fromIdx = firstData < 0 ? body.length : Math.max(star, firstData);
-  const rows = [];
-  for (let r = 1; r <= topEnd; r++) rows.push(r);
-  let hidden = 0;
-  for (let i = fromIdx; i < body.length; i++) {
-    if (marks[i] === SITE_HIDE_MARK) { hidden++; continue; }
-    rows.push(head + 1 + i);
-  }
-
-  // 表示用シートを空にして、行数・列数を合わせる
-  const all = dst.getRange(1, 1, dst.getMaxRows(), dst.getMaxColumns());
-  all.breakApart();
-  all.clearDataValidations();
-  dst.clear();
-  dst.clearConditionalFormatRules();
-  dst.setFrozenRows(0);
-  dst.setFrozenColumns(0);
-  const need = rows.length + SITE_SPARE_ROWS;
-  if (dst.getMaxRows() > need) dst.deleteRows(need + 1, dst.getMaxRows() - need);
-  else if (dst.getMaxRows() < need) dst.insertRowsAfter(dst.getMaxRows(), need - dst.getMaxRows());
-  if (dst.getMaxColumns() < cols) dst.insertColumnsAfter(dst.getMaxColumns(), cols - dst.getMaxColumns());
-
-  // 続いている行はまとめて写す（値・数式・書式・リンク・結合）
-  let destRow = 1;
-  rowRuns_(rows).forEach(run => {
-    src.getRange(run.start, 1, run.length, cols).copyTo(dst.getRange(destRow, 1));
-    destRow += run.length;
-  });
-
-  // 列の幅・行の高さ・固定・枠線・非表示の列
-  src.getRange(1, 1, 1, cols).copyTo(dst.getRange(1, 1), SpreadsheetApp.CopyPasteType.PASTE_COLUMN_WIDTHS, false);
-  sameRuns_(rows.map(r => src.getRowHeight(r))).forEach(run => dst.setRowHeights(run.index + 1, run.length, run.value));
-  dst.setRowHeights(rows.length + 1, SITE_SPARE_ROWS, 21);
-  for (let c = 1; c <= cols; c++) {
-    if (src.isColumnHiddenByUser(c)) dst.hideColumns(c); else dst.showColumns(c);
-  }
-  dst.setFrozenRows(Math.min(src.getFrozenRows(), topEnd));
-  dst.setFrozenColumns(src.getFrozenColumns());
-  dst.setHiddenGridlines(src.hasHiddenGridlines());
-
-  // ★ の印は見せない
-  if (star >= fromIdx) dst.getRange(topEnd + 1, 1).clearContent();
-
-  return { from: head + 1 + fromIdx, rows: rows.length - topEnd, hidden };
-}
-
-/**
- * 行番号の並びを、続いている区間に分ける → [{start: 先頭の行, length}]
- */
-function rowRuns_(rows) {
-  const runs = [];
-  rows.forEach(r => {
-    const prev = runs[runs.length - 1];
-    if (prev && r === prev.start + prev.length) prev.length++;
-    else runs.push({ start: r, length: 1 });
-  });
-  return runs;
-}
-
-/**
- * 値の並びを、同じ値が続く区間に分ける → [{value, index: 先頭の位置（0始まり）, length}]
- */
-function sameRuns_(values) {
-  const runs = [];
-  values.forEach((v, i) => {
-    const prev = runs[runs.length - 1];
-    if (prev && v === prev.value) prev.length++;
-    else runs.push({ value: v, index: i, length: 1 });
-  });
-  return runs;
 }
 
 
@@ -901,9 +744,7 @@ function idFromUrl_(url) {
  * 設定のシート名があればそのシート、空なら先頭のシート
  */
 function sheetOf_(ss, f) {
-  if (f.sheet) return requireSheet_(ss, f.sheet);
-  // シート名が空なら先頭のシート。ただし表示用の「サイト表示」には書き込まない
-  return ss.getSheets().find(s => s.getName() !== SITE_SHEET_NAME) || ss.getSheets()[0];
+  return f.sheet ? requireSheet_(ss, f.sheet) : ss.getSheets()[0];
 }
 
 function requireSheet_(ss, name) {

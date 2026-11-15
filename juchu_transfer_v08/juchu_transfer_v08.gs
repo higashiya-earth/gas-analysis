@@ -15,6 +15,8 @@
  *  当初受注金額が 1,000,000 以上の行は File6（注文書・注文請書チェックリスト）へも書く。
  *  File7（工事現場詳細）へは毎回書き、現場詳細の列は折り返して行の高さを内容に合わせる。
  *  Copyflag4 は File5・File6（対象の行のみ）・File7 がすべて書けたときに付ける。
+ *  深夜の自動実行は、設定ファイルの「自動転記」の右のセルが「有」のときだけ行う（「無」なら何もしない）。
+ *  メニューの「コピー実行」とフォーム送信時（GAS_Pri）は、自動転記の設定に関係なく動く。
  *
  * 【設置】このコードを設定ファイルの Apps Script に貼り、setupTriggers を1回実行する（README.md 参照）。
  */
@@ -27,11 +29,14 @@
 const SETTINGS_FILE_ID = '1NJEMrTL5u0Zs29uAnvP-1I7R_Z3Qn8MTWxIFHonu-Jc';
 
 // この GAS の版。メニューの結果表示と「設定の確認」に出るので、貼り替えたコードが動いているか確かめられる
-const SCRIPT_VERSION = 'v08-File7対応 2026-11-13b';
+const SCRIPT_VERSION = 'v08-自動転記フラグ 2026-11-15';
 const SETTINGS_ID_PROPERTY = 'SETTINGS_FILE_ID_V08';
 
 const SETTINGS_SHEET_NAME = '設定ファイル';
 const STAFF_TABLE_TITLE = '担当名変換テーブル';
+const AUTO_COPY_TITLE = '自動転記';                          // このセルの右のセルが「有・無」
+const AUTO_COPY_ON = ['有', 'あり', '有り', '○', '〇', 'on', 'true', 'yes'];
+const AUTO_COPY_OFF = ['無', 'なし', '無し', '×', 'off', 'false', 'no'];
 const NO_STAFF = '無し';
 
 // File4 → File6 の条件：当初受注金額がこの額以上
@@ -106,7 +111,7 @@ function checkSettings() {
 function settingsReport_() {
 
   const cfg = loadConfig_();
-  const lines = [`GAS：${SCRIPT_VERSION}`, `設定ファイル：${cfg.settingsName}`];
+  const lines = [`GAS：${SCRIPT_VERSION}`, `設定ファイル：${cfg.settingsName}`, autoCopyLine_(cfg.autoCopy)];
   const jst = Utilities.formatDate(new Date(), TIMEZONE, 'Z');
 
   fileNumbers_(cfg).forEach(n => {
@@ -318,6 +323,10 @@ function nightlyCopyV08() {
   try {
     const messages = withLock_(() => {
       const cfg = loadConfig_();
+      if (!cfg.autoCopy.on) {
+        console.log(`自動転記が「${cfg.autoCopy.text}」のため、深夜のコピー実行はしません`);
+        return [];
+      }
       return [copyFile2_(cfg), copyFile4_(cfg)].filter(r => r.errors.length).map(resultMessage_);
     });
     if (messages.length) notifyError_('GAS_Sec（深夜のコピー実行）でコピーできない行がありました', new Error(messages.join('\n\n')));
@@ -639,7 +648,29 @@ function parseSettings_(rows) {
     if (!files[n].flagCol) throw new Error(`設定ファイルの File${n} の列名に Copyflag がありません`);
   });
 
-  return { files, staff: parseStaffTable_(rows) };
+  return { files, staff: parseStaffTable_(rows), autoCopy: parseAutoCopy_(rows) };
+}
+
+/**
+ * 「自動転記」と書かれたセルの右のセルを読む（有・無）
+ *  見つからない・空欄・読めない値のときは「有」（この設定ができる前と同じ動き）として扱い、注意を出す
+ * @return {{on: boolean, text: string, note: string}}
+ */
+function parseAutoCopy_(rows) {
+  for (let i = 0; i < rows.length; i++) {
+    const j = rows[i].findIndex(v => normalize_(v) === AUTO_COPY_TITLE);
+    if (j < 0) continue;
+    const text = normalize_(rows[i][j + 1]);
+    const key = text.toLowerCase();
+    if (AUTO_COPY_OFF.indexOf(key) >= 0) return { on: false, text, note: '' };
+    if (AUTO_COPY_ON.indexOf(key) >= 0) return { on: true, text, note: '' };
+    return { on: true, text: text || '空欄', note: `「${AUTO_COPY_TITLE}」の右のセルが「${text || '空欄'}」のため「有」として動きます（「有」か「無」を入れてください）` };
+  }
+  return { on: true, text: '設定なし', note: `設定ファイルに「${AUTO_COPY_TITLE}」のセルが無いため「有」として動きます` };
+}
+
+function autoCopyLine_(a) {
+  return `自動転記（深夜${NIGHTLY_HOUR}時台のコピー実行）：${a.on ? '有' : '無'}` + (a.note ? `\n   ※${a.note}` : '');
 }
 
 /**

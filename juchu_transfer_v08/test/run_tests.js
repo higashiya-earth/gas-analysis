@@ -421,7 +421,7 @@ test('タイムゾーンが米国のファイルでも、日付・Copyflag は�
   assert.strictEqual(w.file4.get(6, 2), '2026/11/13', 'File4 の日付が11/12にずれた');
   assert.ok(isStamp(w.file1.get(2, 19)));
   gas.menuCopyV08();
-  assert.match(alerts[0], /v08-File7対応/);
+  assert.match(alerts[0], /v08-自動転記フラグ/);
   assert.strictEqual(w.file5.get(5, 2), '2026/11/13');
   same(w.file7.cells[4].slice(0, 7), ['', '', '東谷', '岐阜市', '美江寺交差点歩道', '2026/12/12', '横断歩道\n歩道路側帯']);
   assert.ok(isStamp(w.file4.get(6, 21)));
@@ -443,6 +443,79 @@ test('取り戻し：File7 だけ抜けた行は Copyflag4 を消して「コピ
   assert.strictEqual(w.file6.getLastRow(), rows6, 'File6 が二重');
   same(w.file7.cells[4].slice(2, 7), ['東谷', '岐阜県警契約課', '岐阜薮田交差点', '2026/12/30', '１．45cm幅\n２．横断歩道 30m']);
   assert.ok(isStamp(w.file4.get(6, 21)));
+});
+
+// ===== 自動転記フラグ =====
+
+// 設定ファイル1行目の T列「自動転記」・U列の値を差し替えた模擬ファイル一式
+function worldWithAuto(value) {
+  const w = buildWorld();
+  const set = w.files.find(f => f.id === 'SET').sheets[0];
+  if (value === undefined) { set.cells[0][19] = ''; set.cells[0][20] = ''; }
+  else set.cells[0][20] = value;
+  return w;
+}
+const pendingWorld = value => {
+  const w = worldWithAuto(value);
+  const { gas } = loadGas(w, 'SET');
+  gas.onFormSubmitV08({ range: w.file1.getRange(2, 1) });   // GAS_Pri は自動転記に関係なく動く
+  assert.ok(isStamp(w.file1.get(2, 19)), 'フォーム送信の転記が動いていない');
+  return w;
+};
+
+test('自動転記「無」：深夜のコピー実行は何もしない（メールも出さない）', () => {
+  const w = pendingWorld('無');
+  const { gas, mails } = loadGas(w, 'SET');
+  const rows5 = w.file5.getLastRow();
+  gas.nightlyCopyV08();
+  assert.strictEqual(w.file5.getLastRow(), rows5, 'File5 に書かれた');
+  assert.strictEqual(w.file4.get(6, 21), '', 'Copyflag4 が付いた');
+  assert.strictEqual(w.file2.get(5, 11), '', 'Copyflag2 が付いた');
+  assert.strictEqual(mails.length, 0);
+});
+
+test('自動転記「無」でも、メニューの「コピー実行」は動く', () => {
+  const w = pendingWorld('無');
+  const { gas, alerts } = loadGas(w, 'SET');
+  gas.menuCopyV08();
+  assert.ok(isStamp(w.file4.get(6, 21)), 'Copyflag4 が付かない');
+  assert.ok(isStamp(w.file2.get(5, 11)), 'Copyflag2 が付かない');
+  assert.match(alerts[0], /v08-自動転記フラグ/);
+});
+
+test('自動転記「有」：深夜のコピー実行は今までどおり動く', () => {
+  const w = pendingWorld('有');
+  const { gas } = loadGas(w, 'SET');
+  gas.nightlyCopyV08();
+  assert.ok(isStamp(w.file4.get(6, 21)));
+  assert.ok(isStamp(w.file2.get(5, 11)));
+});
+
+test('自動転記のセルが無い・空欄・読めない値なら「有」として動き、設定の確認で注意を出す', () => {
+  [undefined, '', 'する'].forEach(v => {
+    const w = pendingWorld(v);
+    const { gas, alerts } = loadGas(w, 'SET');
+    gas.nightlyCopyV08();
+    assert.ok(isStamp(w.file4.get(6, 21)), `値 ${v} で深夜のコピーが止まった`);
+    gas.menuCheckSettingsV08();
+    assert.match(alerts[0], /自動転記（深夜1時台のコピー実行）：有\n   ※/);
+  });
+});
+
+test('「無し」「なし」「OFF」も「無」、設定の確認に表示する。説明文の中の「自動転記」は読まない', () => {
+  ['無し', 'なし', 'OFF', ' 無 '].forEach(v => {
+    const { gas } = loadGas(worldWithAuto(v), 'SET');
+    const cfg = gas.parseSettings_(worldWithAuto(v).files.find(f => f.id === 'SET').sheets[0].cells);
+    assert.strictEqual(cfg.autoCopy.on, false, v);
+  });
+  const w = worldWithAuto('無');
+  const set = w.files.find(f => f.id === 'SET').sheets[0];
+  set.cells.push(['', '', '　　更に「自動転記」のフラグ「有・無」を確認し「有」であれば、深夜1時に自動起動する']);
+  set.maxRows = set.cells.length;
+  const { gas, alerts } = loadGas(w, 'SET');
+  gas.menuCheckSettingsV08();
+  assert.match(alerts[0], /自動転記（深夜1時台のコピー実行）：無/);
+  assert.ok(!/※/.test(alerts[0].split('\n').slice(0, 4).join('\n')), '注意が出た');
 });
 
 let failed = 0;

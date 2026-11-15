@@ -29,7 +29,7 @@
 const SETTINGS_FILE_ID = '1NJEMrTL5u0Zs29uAnvP-1I7R_Z3Qn8MTWxIFHonu-Jc';
 
 // この GAS の版。メニューの結果表示と「設定の確認」に出るので、貼り替えたコードが動いているか確かめられる
-const SCRIPT_VERSION = 'v08-自動転記フラグ 2026-11-15';
+const SCRIPT_VERSION = 'v08-自動転記フラグ 2026-11-15b';
 const SETTINGS_ID_PROPERTY = 'SETTINGS_FILE_ID_V08';
 
 const SETTINGS_SHEET_NAME = '設定ファイル';
@@ -90,6 +90,9 @@ function setupTriggers() {
     .create();
 
   console.log(`トリガーを作成しました。設定：${cfg.settingsName}／フォーム送信：${file1.getName()}／毎日 ${NIGHTLY_HOUR}時台：コピー実行`);
+  console.log(cfg.autoCopy.on
+    ? `自動転記：有（毎日 ${NIGHTLY_HOUR}時台にコピー実行します）`
+    : `自動転記：無（毎日 ${NIGHTLY_HOUR}時台に起動しますが、設定ファイルが「無」の間はコピーせずに終わります）`);
 }
 
 /**

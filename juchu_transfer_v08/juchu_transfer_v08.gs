@@ -15,6 +15,7 @@
  *  当初受注金額が 1,000,000 以上の行は File6（注文書・注文請書チェックリスト）へも書く。
  *  File7（工事現場詳細）へは毎回書き、現場詳細の列は折り返して行の高さを内容に合わせる。
  *  Copyflag4 は File5・File6（対象の行のみ）・File7 がすべて書けたときに付ける。
+ *  セルに付いたリンク（例：リンク先の「作業指示書」）も、文字と一緒にコピーする。
  *  深夜の自動実行は、設定ファイルの「自動転記」の右のセルが「有」のときだけ行う（「無」なら何もしない）。
  *  メニューの「コピー実行」とフォーム送信時（GAS_Pri）は、自動転記の設定に関係なく動く。
  *
@@ -29,7 +30,7 @@
 const SETTINGS_FILE_ID = '1NJEMrTL5u0Zs29uAnvP-1I7R_Z3Qn8MTWxIFHonu-Jc';
 
 // この GAS の版。メニューの結果表示と「設定の確認」に出るので、貼り替えたコードが動いているか確かめられる
-const SCRIPT_VERSION = 'v08-自動転記フラグ 2026-11-15b';
+const SCRIPT_VERSION = 'v08-リンクコピー 2026-11-17';
 const SETTINGS_ID_PROPERTY = 'SETTINGS_FILE_ID_V08';
 
 const SETTINGS_SHEET_NAME = '設定ファイル';
@@ -348,9 +349,9 @@ function copyFile2_(cfg) {
   const file3 = openFile_(cfg, 3);
   const yearCol = f2.colByName['年'], monthCol = f2.colByName['月'];
 
-  return eachPendingRow_(cfg, 2, f3.fields, (values) => {
+  return eachPendingRow_(cfg, 2, f3.fields, (values, links) => {
     const sheet = requireSheet_(file3, periodSheetName_(values[yearCol - 1], values[monthCol - 1]));
-    const cells = f3.fields.map(x => ({ col: x.dest, value: values[x.sources[0] - 1] }));
+    const cells = f3.fields.map(x => ({ col: x.dest, value: values[x.sources[0] - 1], link: links[x.sources[0] - 1] }));
     writeCells_(sheet, findWriteRow_(sheet, BLANK_COLS_DEFAULT, findNamesRow_(sheet, f3) + 1), cells);
   }, 'File2 → File3');
 }
@@ -372,20 +373,20 @@ function copyFile4_(cfg) {
   const amountCol = f4.colByName['当初受注金額'];
   const targets = f5.fields.concat(f6.fields, f7 ? f7.fields : []);
 
-  return eachPendingRow_(cfg, 4, targets, (values) => {
+  return eachPendingRow_(cfg, 4, targets, (values, links) => {
     if (toNumber_(values[amountCol - 1]) >= FILE6_MIN_AMOUNT) {
-      const cells6 = f6.fields.map(x => ({ col: x.dest, value: amountOrValue_(f4, x.sources[0], values) }));
+      const cells6 = f6.fields.map(x => ({ col: x.dest, value: amountOrValue_(f4, x.sources[0], values), link: links[x.sources[0] - 1] }));
       if (!rowExists_(sheet6, head6, cells6)) writeCells_(sheet6, findWriteRow_(sheet6, BLANK_COLS_FILE6, head6 + 1), cells6);
     }
     if (sheet7) {
-      const cells7 = f7.fields.map(x => ({ col: x.dest, value: values[x.sources[0] - 1] }));
+      const cells7 = f7.fields.map(x => ({ col: x.dest, value: values[x.sources[0] - 1], link: links[x.sources[0] - 1] }));
       if (!rowExists_(sheet7, head7, cells7)) {
         const row7 = findWriteRow_(sheet7, BLANK_COLS_FILE7, head7 + 1);
         writeCells_(sheet7, row7, cells7);
         fitWrappedRow_(sheet7, row7, f7.colByName[WRAP_FIELD_FILE7]);
       }
     }
-    const cells5 = f5.fields.map(x => ({ col: x.dest, value: values[x.sources[0] - 1] }));
+    const cells5 = f5.fields.map(x => ({ col: x.dest, value: values[x.sources[0] - 1], link: links[x.sources[0] - 1] }));
     if (!rowExists_(sheet5, head5, cells5)) writeCells_(sheet5, findWriteRow_(sheet5, BLANK_COLS_DEFAULT, head5 + 1), cells5);
   }, f7 ? 'File4 → File5・File6・File7' : 'File4 → File5・File6');
 }
@@ -417,8 +418,9 @@ function eachPendingRow_(cfg, n, targetFields, write, label) {
 
   const width = Math.max(flagCol, ...targetFields.map(x => x.sources[0] || 1));
   const tz = sheet.getParent().getSpreadsheetTimeZone();
-  const rows = sheet.getRange(headerRow + 1, 1, last - headerRow, width).getValues()
-    .map(r => r.map(v => dateToText_(v, tz)));
+  const range = sheet.getRange(headerRow + 1, 1, last - headerRow, width);
+  const rows = range.getValues().map(r => r.map(v => dateToText_(v, tz)));
+  const linkRows = readLinks_(range);
 
   rows.forEach((values, i) => {
     const row = headerRow + 1 + i;
@@ -426,7 +428,7 @@ function eachPendingRow_(cfg, n, targetFields, write, label) {
     if (targetFields.every(x => !x.sources[0] || isBlank_(values[x.sources[0] - 1]))) return;
 
     try {
-      write(values);
+      write(values, linkRows[i] || []);
       sheet.getRange(row, flagCol).setValue(stamp_());
       SpreadsheetApp.flush();
       result.copied++;
@@ -545,6 +547,34 @@ function writeCells_(sheet, row, cells) {
   groupRuns_(cells).forEach(run => {
     sheet.getRange(row, run[0].col, 1, run.length).setValues([run.map(c => c.value)]);
   });
+  // 転記元のセルにリンクがあれば、同じ文字にリンクを付ける（値は上で書いたものと同じ）
+  cells.forEach(c => {
+    if (!c.link || typeof c.value !== 'string' || isBlank_(c.value)) return;   // 文字のセルだけ（数値・日付は型を変えない）
+    const rich = SpreadsheetApp.newRichTextValue().setText(String(c.value)).setLinkUrl(c.link).build();
+    sheet.getRange(row, c.col).setRichTextValue(rich);
+  });
+}
+
+/**
+ * 範囲の各セルのリンク（URL）を読む。リンクが無いセルは ''。
+ * セル全体のリンク、または文字の一部に付いたリンク（最初のもの）を拾う。
+ * 読めないときは、リンク無しとして扱う（コピー自体は止めない）
+ */
+function readLinks_(range) {
+  let rich;
+  try {
+    rich = range.getRichTextValues();
+  } catch (e) {
+    console.log(`リンクを読めませんでした（文字だけコピーします）：${e.message}`);
+    return [];
+  }
+  return rich.map(r => r.map(v => {
+    if (!v) return '';
+    const url = v.getLinkUrl();
+    if (url) return url;
+    const run = v.getRuns().find(x => x.getLinkUrl());
+    return run ? run.getLinkUrl() : '';
+  }));
 }
 
 function groupRuns_(cells) {

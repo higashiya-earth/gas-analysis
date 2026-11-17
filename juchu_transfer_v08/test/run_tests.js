@@ -25,6 +25,7 @@ class Sheet {
     this.formats = {};
     this.wraps = {};
     this.resized = [];
+    this.links = {};
   }
   autoResizeRows(start, n) { this.resized.push([start, n]); }
   getName() { return this.name; }
@@ -62,6 +63,13 @@ class Sheet {
       setValue(v) { sheet.set(r, c, v); return this; },
       setNumberFormat(f) { sheet.formats[`${r},${c}`] = f; return this; },
       setWrap(w) { sheet.wraps[`${r},${c}`] = w; return this; },
+      getRichTextValues: () => grid((y, x) => {
+        const v = sheet.get(y, x);
+        if (typeof v !== 'string') return null;   // 実物も文字以外は null
+        const url = sheet.links[`${y},${x}`] || null;
+        return { getText: () => v, getLinkUrl: () => url, getRuns: () => [{ getLinkUrl: () => url }] };
+      }),
+      setRichTextValue(rv) { sheet.set(r, c, rv.text); if (rv.url) sheet.links[`${r},${c}`] = rv.url; else delete sheet.links[`${r},${c}`]; return this; },
       setVerticalAlignment() { return this; },
       getSheet: () => sheet,
       getRow: () => r
@@ -165,6 +173,7 @@ function loadGas(world, activeId, props = {}) {
     SpreadsheetApp: {
       openById: byId,
       flush: () => {},
+      newRichTextValue: () => { const v = {}; const b = { setText: t => { v.text = t; return b; }, setLinkUrl: u => { v.url = u; return b; }, build: () => v }; return b; },
       getActiveSpreadsheet: () => (activeId ? byId(activeId) : null),
       getUi: () => ({ alert: m => alerts.push(m), createMenu: () => ({ addItem() { return this; }, addToUi() {} }) })
     },
@@ -421,7 +430,7 @@ test('タイムゾーンが米国のファイルでも、日付・Copyflag は�
   assert.strictEqual(w.file4.get(6, 2), '2026/11/13', 'File4 の日付が11/12にずれた');
   assert.ok(isStamp(w.file1.get(2, 19)));
   gas.menuCopyV08();
-  assert.match(alerts[0], /v08-自動転記フラグ/);
+  assert.match(alerts[0], /v08-リンクコピー/);
   assert.strictEqual(w.file5.get(5, 2), '2026/11/13');
   same(w.file7.cells[4].slice(0, 7), ['', '', '東谷', '岐阜市', '美江寺交差点歩道', '2026/12/12', '横断歩道\n歩道路側帯']);
   assert.ok(isStamp(w.file4.get(6, 21)));
@@ -480,7 +489,7 @@ test('自動転記「無」でも、メニューの「コピー実行」は動�
   gas.menuCopyV08();
   assert.ok(isStamp(w.file4.get(6, 21)), 'Copyflag4 が付かない');
   assert.ok(isStamp(w.file2.get(5, 11)), 'Copyflag2 が付かない');
-  assert.match(alerts[0], /v08-自動転記フラグ/);
+  assert.match(alerts[0], /v08-リンクコピー/);
 });
 
 test('自動転記「有」：深夜のコピー実行は今までどおり動く', () => {
@@ -516,6 +525,37 @@ test('「無し」「なし」「OFF」も「無」、設定の確認に表示�
   gas.menuCheckSettingsV08();
   assert.match(alerts[0], /自動転記（深夜1時台のコピー実行）：無/);
   assert.ok(!/※/.test(alerts[0].split('\n').slice(0, 4).join('\n')), '注意が出た');
+});
+
+// ===== リンクのコピー =====
+
+test('コピー実行：「作業指示書」に付いたリンクも File5 にコピーする（文字・ほかの列は今までどおり）', () => {
+  const w = buildWorld();
+  const row4 = ['', '2026/11/17', '2603611', '016', '横井', '市川工務店', '柴田', '末', '作業指示書', '', 'リンクのテスト工事', '2026/12/01', '', '', '', '', '', '', 300000, '', ''];
+  w.file4.cells.push(row4.slice());
+  const url = 'https://docs.google.com/spreadsheets/d/1D9dtFOKnwa1ov-1HscSb-IGVXD3z_9OW/edit?gid=1322362326#gid=1322362326';
+  w.file4.links['6,9'] = url;
+  const { gas } = loadGas(w, 'SET');
+  gas.menuCopyV08();
+  assert.strictEqual(w.file5.get(5, 9), '作業指示書');
+  assert.strictEqual(w.file5.links['5,9'], url, 'リンクがコピーされていない');
+  assert.strictEqual(w.file5.get(5, 11), 'リンクのテスト工事');
+  assert.ok(!w.file5.links['5,11'], 'リンクの無い列にリンクが付いた');
+  assert.ok(isStamp(w.file4.get(6, 21)));
+  // File7（リンク先の列は転記しない）にはリンクを付けない
+  assert.deepStrictEqual(Object.keys(w.file7.links), []);
+});
+
+test('リンクが無い行・リンクを読めないときも、文字は今までどおりコピーする', () => {
+  const w = buildWorld();
+  w.file4.cells.push(['', '2026/11/17', '2603611', '017', '横井', '市川工務店', '柴田', '末', '作業指示書', '', 'リンク無し工事', '', '', '', '', '', '', '', 300000, '', '']);
+  const { gas } = loadGas(w, 'SET');
+  const orig = w.file4.getRange.bind(w.file4);
+  w.file4.getRange = (...a) => { const r = orig(...a); r.getRichTextValues = () => { throw new Error('読めない'); }; return r; };
+  gas.menuCopyV08();
+  assert.strictEqual(w.file5.get(5, 9), '作業指示書');
+  assert.deepStrictEqual(Object.keys(w.file5.links), []);
+  assert.ok(isStamp(w.file4.get(6, 21)));
 });
 
 let failed = 0;

@@ -177,9 +177,7 @@ function getAccessToken_() {
   const cached = cache.get('token');
   if (cached) return cached;
 
-  const keyJson = PropertiesService.getScriptProperties().getProperty('SA_KEY_JSON');
-  if (!keyJson) throw new Error('スクリプト プロパティ SA_KEY_JSON が未設定です。');
-  const key = JSON.parse(keyJson);
+  const key = loadServiceAccountKey_();
 
   const now = Math.floor(Date.now() / 1000);
   const b64 = function (obj) {
@@ -210,6 +208,44 @@ function getAccessToken_() {
   const token = JSON.parse(r.getContentText()).access_token;
   cache.put('token', token, 50 * 60);
   return token;
+}
+
+/**
+ * スクリプト プロパティ SA_KEY_JSON を読み込み、形式を検査して返す。
+ * 貼り付け時に改行が「\n」の文字列のまま残ったケースなどは自動で補正する。
+ */
+function loadServiceAccountKey_() {
+  const raw = PropertiesService.getScriptProperties().getProperty('SA_KEY_JSON');
+  if (!raw) throw new Error('スクリプト プロパティ SA_KEY_JSON が未設定です。');
+  let key;
+  try {
+    key = JSON.parse(raw.trim());
+  } catch (e) {
+    throw new Error('SA_KEY_JSON が JSON として読めません。JSON キーファイルの中身を { から } まで丸ごと貼り直してください。');
+  }
+  if (key.type !== 'service_account' || !key.client_email || !key.private_key) {
+    throw new Error('SA_KEY_JSON がサービスアカウントの JSON キーではありません' +
+      '（type=' + key.type + ', client_email ' + (key.client_email ? 'あり' : 'なし') +
+      ', private_key ' + (key.private_key ? 'あり' : 'なし') + '）。');
+  }
+  // 改行が「\n」という 2 文字のまま入っている場合は本物の改行に戻す
+  let pk = String(key.private_key).replace(/\\n/g, '\n').replace(/\r/g, '').trim();
+  if (pk.indexOf('-----BEGIN PRIVATE KEY-----') !== 0 || pk.indexOf('-----END PRIVATE KEY-----') < 0) {
+    throw new Error('private_key の形式が不正です（BEGIN/END PRIVATE KEY 行が見つかりません）。' +
+      'JSON キーを貼り直すか、鍵を作り直してください。');
+  }
+  key.private_key = pk + '\n';
+  return key;
+}
+
+/** 鍵の設定を確認する（秘密鍵そのものはログに出さない） */
+function checkKey() {
+  const key = loadServiceAccountKey_();
+  console.log('client_email : ' + key.client_email);
+  console.log('client_id    : ' + key.client_id + '（管理コンソールの委任に登録した ID と一致するか確認）');
+  console.log('private_key  : ' + key.private_key.split('\n').length + ' 行');
+  Utilities.computeRsaSha256Signature('test', key.private_key);
+  console.log('署名テスト OK: 鍵の形式は正しいです。');
 }
 
 function deleteTriggers_() {

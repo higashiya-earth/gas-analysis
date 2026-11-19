@@ -223,10 +223,19 @@ function loadServiceAccountKey_() {
   } catch (e) {
     throw new Error('SA_KEY_JSON が JSON として読めません。JSON キーファイルの中身を { から } まで丸ごと貼り直してください。');
   }
-  if (key.type !== 'service_account' || !key.client_email || !key.private_key) {
-    throw new Error('SA_KEY_JSON がサービスアカウントの JSON キーではありません' +
-      '（type=' + key.type + ', client_email ' + (key.client_email ? 'あり' : 'なし') +
-      ', private_key ' + (key.private_key ? 'あり' : 'なし') + '）。');
+  if (!key || typeof key !== 'object' || key.type !== 'service_account' || !key.client_email || !key.private_key) {
+    // 秘密情報は出さず、「何が貼られているか」の手掛かりだけを示す
+    let hint = '';
+    if (typeof key !== 'object' || key === null) {
+      hint = '値が JSON オブジェクトではなく ' + typeof key + ' です（前後に余分な " が付いている等）。';
+    } else if (key.installed || key.web) {
+      hint = 'OAuth クライアント ID の JSON が貼られています。サービスアカウントの「鍵」タブで作った JSON キーが必要です。';
+    } else if (key.timeZone || key.oauthScopes) {
+      hint = 'appsscript.json の内容が貼られています。サービスアカウントの JSON キーを貼ってください。';
+    } else {
+      hint = '含まれている項目名: ' + Object.keys(key).join(', ');
+    }
+    throw new Error('SA_KEY_JSON がサービスアカウントの JSON キーではありません。' + hint);
   }
   // 改行が「\n」という 2 文字のまま入っている場合は本物の改行に戻す
   let pk = String(key.private_key).replace(/\\n/g, '\n').replace(/\r/g, '').trim();

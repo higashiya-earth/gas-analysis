@@ -136,7 +136,8 @@ test('フラグを選ぶと B〜P列だけ書式が変わる（ピンク・グ�
   const P = '#FF4FA3';
   assert.deepStrictEqual(rowStyle(w.src, 4), { font: [P, P, P], bg: [null, null, null], out: [null, null, null] });
   assert.deepStrictEqual(rowStyle(w.src, 6).font, [P, P, P]);
-  assert.deepStrictEqual(rowStyle(w.src, 7), { font: ['#000000', '#000000', '#000000'], bg: ['#D9D9D9', '#D9D9D9', '#D9D9D9'], out: [null, null, null] });
+  assert.deepStrictEqual(rowStyle(w.src, 7), { font: ['#000000', '#000000', '#000000'], bg: ['#D9D9D9', '#D9D9D9', '#D9D9D9'], out: [null, null, '#D9D9D9'] });
+  assert.strictEqual(w.src.fonts['7,19'], undefined, 'フラグの文字色を変えた');
   assert.deepStrictEqual(rowStyle(w.src, 8).bg, ['#808080', '#808080', '#808080']);
   assert.strictEqual(w.ss.getSheetByName('サイト表示'), null, 'フラグの変更ではサイト表示を更新しない');
 });

@@ -13,7 +13,7 @@
  *
  * シートは作り直さず中身だけ入れ替えるので、「ウェブに公開」の埋め込みはそのまま使えます。
  *
- * 【フラグ】工事Index の S列（フラグ）をプルダウンで選ぶと、その行の B〜P列の書式を変えます。
+ * 【フラグ】工事Index の S列（フラグ）をプルダウンで選ぶと、その行の B〜P列の書式を変えます（S列のセルの色も同じにする）。
  *  未施工：元に戻す（文字は黒、セルの色は外す＝しま模様に戻る）
  *  継続-請無・継続-請有・工事完了：文字をピンク
  *  完工：セルをグレー　／　中止・重複：セルを濃いグレー
@@ -100,6 +100,7 @@ function applyFlagRows_(sheet, first, last, blankResets) {
     const range = sheet.getRange(from + i, FORMAT_FIRST_COL, 1, width);
     range.setFontColor(style.font);
     range.setBackground(style.background);
+    sheet.getRange(from + i, FLAG_COL).setBackground(style.background);   // フラグのセルも同じ行の色に（文字色は変えない）
     count++;
   });
   return count;

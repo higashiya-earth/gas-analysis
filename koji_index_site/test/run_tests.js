@@ -38,6 +38,7 @@ class Sheet {
     const s = this;
     if (r + nr - 1 > s.maxRows) throw new Error(`範囲外 ${s.name} ${r + nr - 1}行`);
     return {
+      getBackgrounds: () => Array.from({ length: nr }, (_, i) => Array.from({ length: nc }, (_, j) => s.bgs[`${r + i},${c + j}`] || '#ffffff')),
       getDisplayValues: () => Array.from({ length: nr }, (_, i) => Array.from({ length: nc }, (_, j) => String(s.get(r + i, c + j)))),
       breakApart() { return this; }, clearDataValidations() { return this; },
       clearContent() { for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) s.set(r + i, c + j, ''); return this; },
@@ -166,6 +167,21 @@ test('複数行の貼り付け・メニューの付け直しでもまとめて�
   assert.deepStrictEqual(rowStyle(w.src, 8).bg, ['#808080', '#808080', '#808080']);
   assert.match(alerts[0], /3行/);   // フラグのある 4・5・8行目だけ
   assert.deepStrictEqual(rowStyle(w.src, 6).font, [null, null, null], 'フラグの無い行を触った');
+});
+
+test('もとの色に戻す：4〜80行目のように行ごと色が付いている所は、その色に戻す（S列も同じ色）', () => {
+  const w = world(); const { gas } = load(w);
+  const BLUE = '#c9daf8';
+  for (let r = 4; r <= 8; r++) for (let c = 2; c <= 16; c++) w.src.bgs[`${r},${c}`] = BLUE;   // 行ごと水色のブロック
+  setFlag(w, 6, '完工'); gas.onEdit({ range: w.src.getRange(6, 19) });
+  assert.deepStrictEqual(rowStyle(w.src, 6).bg, ['#D9D9D9', '#D9D9D9', '#D9D9D9']);
+  setFlag(w, 5, '中止'); gas.onEdit({ range: w.src.getRange(5, 19) });   // 上の行もグレーにする
+  setFlag(w, 6, '未施工'); gas.onEdit({ range: w.src.getRange(6, 19) });
+  assert.deepStrictEqual(rowStyle(w.src, 6).bg, [BLUE, BLUE, BLUE], 'グレーの行を飛ばして、近くの水色に戻す');
+  assert.strictEqual(w.src.bgs['6,19'], BLUE, 'S列も同じ色');
+  setFlag(w, 7, '継続-請有'); gas.onEdit({ range: w.src.getRange(7, 19) });
+  assert.strictEqual(w.src.bgs['7,19'], BLUE);
+  assert.deepStrictEqual(rowStyle(w.src, 7).font, ['#FF4FA3', '#FF4FA3', '#FF4FA3']);
 });
 
 let failed = 0;

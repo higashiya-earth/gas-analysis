@@ -81,7 +81,10 @@ function menuApplyAllFlags() {
 }
 
 /**
- * first〜last 行の S列を読み、B〜P列の文字色・セルの色を付ける
+ * first〜last 行の S列を読み、B〜P列の文字色・セルの色を付ける（S列のセルの色も同じにする）
+ *  セルの色は、完工・中止・重複ならグレー。それ以外は「その行のもとの色」に戻す。
+ *  もとの色は、近くの行（上、無ければ下）のうち、グレーにしていない行の B列の色を使う
+ *  （4〜80行目のように行ごと色が付いている所はその色、色が無い所は色を外す＝しま模様）
  *  一覧に無い値の行は触らない
  * @param {boolean} blankResets true：空欄も「未施工」と同じく元に戻す（フラグを消したとき）
  *                              false：空欄の行は触らない（まとめて付け直すとき。手で付けた色を消さない）
@@ -89,21 +92,46 @@ function menuApplyAllFlags() {
  */
 function applyFlagRows_(sheet, first, last, blankResets) {
   const from = Math.max(first, FLAG_FIRST_ROW);
-  if (last < from) return 0;
-  const flags = sheet.getRange(from, FLAG_COL, last - from + 1, 1).getDisplayValues();
+  const end = sheet.getLastRow();
+  if (Math.min(last, end) < from) return 0;
+
+  // データ全体のフラグと B列の色を一度に読む（もとの色を探すため）
+  const n = end - FLAG_FIRST_ROW + 1;
+  const flags = sheet.getRange(FLAG_FIRST_ROW, FLAG_COL, n, 1).getDisplayValues().map(r => String(r[0]).trim());
+  const colors = sheet.getRange(FLAG_FIRST_ROW, FORMAT_FIRST_COL, n, 1).getBackgrounds().map(r => normalizeColor_(r[0]));
+
   const width = FORMAT_LAST_COL - FORMAT_FIRST_COL + 1;
   let count = 0;
-  flags.forEach((r, i) => {
-    const flag = String(r[0]).trim();
+  for (let row = from; row <= Math.min(last, end); row++) {
+    const i = row - FLAG_FIRST_ROW;
+    const flag = flags[i];
     const style = flag === '' ? (blankResets ? FLAG_STYLES['未施工'] : null) : FLAG_STYLES[flag];
-    if (!style) return;
-    const range = sheet.getRange(from + i, FORMAT_FIRST_COL, 1, width);
-    range.setFontColor(style.font);
-    range.setBackground(style.background);
-    sheet.getRange(from + i, FLAG_COL).setBackground(style.background);   // フラグのセルも同じ行の色に（文字色は変えない）
+    if (!style) continue;
+    const background = style.background || baseColor_(flags, colors, i);
+    sheet.getRange(row, FORMAT_FIRST_COL, 1, width).setFontColor(style.font).setBackground(background);
+    sheet.getRange(row, FLAG_COL).setBackground(background);   // フラグのセルも同じ行の色に（文字色は変えない）
+    colors[i] = normalizeColor_(background);
     count++;
-  });
+  }
   return count;
+}
+
+const GRAY_COLORS = Object.keys(FLAG_STYLES).map(k => FLAG_STYLES[k].background).filter(Boolean).map(c => c.toLowerCase());
+
+/**
+ * i 行目（0始まり）の「もとの色」：上の行から順に、下の行から順に、グレーにしていない行の色を探す。無ければ null
+ */
+function baseColor_(flags, colors, i) {
+  const usable = j => !(FLAG_STYLES[flags[j]] && FLAG_STYLES[flags[j]].background) && GRAY_COLORS.indexOf(colors[j] || '') < 0;
+  for (let j = i - 1; j >= 0; j--) if (usable(j)) return colors[j];
+  for (let j = i + 1; j < colors.length; j++) if (usable(j)) return colors[j];
+  return null;
+}
+
+/** 色を小文字の #rrggbb に。白・未設定は null（色なし） */
+function normalizeColor_(c) {
+  const v = String(c || '').toLowerCase();
+  return v === '' || v === '#ffffff' || v === 'white' ? null : v;
 }
 
 function menuUpdateSite() {

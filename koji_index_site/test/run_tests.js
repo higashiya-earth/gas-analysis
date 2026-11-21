@@ -11,7 +11,7 @@ const same = (a, e, m) => assert.deepStrictEqual(JSON.parse(JSON.stringify(a)), 
 class Sheet {
   constructor(name, rows) {
     this.name = name; this.cells = rows.map(r => r.slice()); this.maxRows = Math.max(rows.length, 30); this.maxCols = 24;
-    this.formats = {}; this.heights = {}; this.widths = {}; this.hiddenCols = {}; this.frozen = [0, 0]; this.gridHidden = false; this.cf = 0;
+    this.formats = {}; this.heights = {}; this.widths = {}; this.hiddenCols = {}; this.frozen = [0, 0]; this.gridHidden = false; this.cf = 0; this.fonts = {}; this.bgs = {};
   }
   getName() { return this.name; }
   get(r, c) { return (this.cells[r - 1] || [])[c - 1] ?? ''; }
@@ -51,7 +51,9 @@ class Sheet {
         }
         d.cf += s.cf;
       },
-      getSheet: () => s, getRow: () => r, getColumn: () => c
+      getSheet: () => s, getRow: () => r, getColumn: () => c, getLastRow: () => r + nr - 1, getLastColumn: () => c + nc - 1,
+      setFontColor(v) { for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) s.fonts[`${r + i},${c + j}`] = v; return this; },
+      setBackground(v) { for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) { if (v === null) delete s.bgs[`${r + i},${c + j}`]; else s.bgs[`${r + i},${c + j}`] = v; } return this; }
     };
   }
 }
@@ -122,6 +124,47 @@ test('A列を編集したときだけすぐ更新し、自動更新のトリガ�
   same(col(w.ss.getSheetByName('サイト表示'), 11).slice(3), ['11月の工事1', 'テスト', '11月の工事2']);
   gas.setupSiteTrigger(); gas.setupSiteTrigger();
   same(triggers.map(t => t.getHandlerFunction()), ['refreshSite']);
+});
+
+// ===== フラグ（S列） =====
+const setFlag = (w, row, v) => w.src.set(row, 19, v);
+const rowStyle = (sh, row) => ({ font: [2, 9, 16].map(c => sh.fonts[`${row},${c}`] || null), bg: [2, 9, 16].map(c => sh.bgs[`${row},${c}`] || null), out: [sh.fonts[`${row},1`] || null, sh.fonts[`${row},17`] || null, sh.bgs[`${row},19`] || null] });
+
+test('フラグを選ぶと B〜P列だけ書式が変わる（ピンク・グレー・濃いグレー）', () => {
+  const w = world(); const { gas } = load(w);
+  [['継続-請無', 4], ['継続-請有', 5], ['工事完了', 6], ['完工', 7], ['中止', 8]].forEach(([f, row]) => { setFlag(w, row, f); gas.onEdit({ range: w.src.getRange(row, 19) }); });
+  const P = '#FF4FA3';
+  assert.deepStrictEqual(rowStyle(w.src, 4), { font: [P, P, P], bg: [null, null, null], out: [null, null, null] });
+  assert.deepStrictEqual(rowStyle(w.src, 6).font, [P, P, P]);
+  assert.deepStrictEqual(rowStyle(w.src, 7), { font: ['#000000', '#000000', '#000000'], bg: ['#D9D9D9', '#D9D9D9', '#D9D9D9'], out: [null, null, null] });
+  assert.deepStrictEqual(rowStyle(w.src, 8).bg, ['#808080', '#808080', '#808080']);
+  assert.strictEqual(w.ss.getSheetByName('サイト表示'), null, 'フラグの変更ではサイト表示を更新しない');
+});
+
+test('「未施工」・空欄にすると元に戻す（文字は黒、セルの色を外す）。一覧に無い値は触らない', () => {
+  const w = world(); const { gas } = load(w);
+  setFlag(w, 5, '完工'); gas.onEdit({ range: w.src.getRange(5, 19) });
+  setFlag(w, 5, '未施工'); gas.onEdit({ range: w.src.getRange(5, 19) });
+  assert.deepStrictEqual(rowStyle(w.src, 5), { font: ['#000000', '#000000', '#000000'], bg: [null, null, null], out: [null, null, null] });
+  setFlag(w, 6, '工事完了'); gas.onEdit({ range: w.src.getRange(6, 19) });
+  setFlag(w, 6, ''); gas.onEdit({ range: w.src.getRange(6, 19) });
+  assert.deepStrictEqual(rowStyle(w.src, 6).font, ['#000000', '#000000', '#000000']);
+  setFlag(w, 7, 'その他'); gas.onEdit({ range: w.src.getRange(7, 19) });
+  assert.deepStrictEqual(rowStyle(w.src, 7).font, [null, null, null]);
+});
+
+test('複数行の貼り付け・メニューの付け直しでもまとめて書式を付ける。見出し行は触らない', () => {
+  const w = world(); const { gas, alerts } = load(w);
+  setFlag(w, 4, '重複'); setFlag(w, 5, '継続-請有');
+  gas.onEdit({ range: w.src.getRange(1, 17, 5, 3) });   // Q〜S列の1〜5行目に貼り付け
+  assert.deepStrictEqual(rowStyle(w.src, 4).bg, ['#808080', '#808080', '#808080']);
+  assert.deepStrictEqual(rowStyle(w.src, 5).font, ['#FF4FA3', '#FF4FA3', '#FF4FA3']);
+  assert.deepStrictEqual(rowStyle(w.src, 1).font, [null, null, null], '見出しを変えた');
+  setFlag(w, 8, '中止');
+  gas.menuApplyAllFlags();
+  assert.deepStrictEqual(rowStyle(w.src, 8).bg, ['#808080', '#808080', '#808080']);
+  assert.match(alerts[0], /3行/);   // フラグのある 4・5・8行目だけ
+  assert.deepStrictEqual(rowStyle(w.src, 6).font, [null, null, null], 'フラグの無い行を触った');
 });
 
 let failed = 0;

@@ -12,6 +12,11 @@
  *  ・メニュー「サイト表示 ＞ 今すぐ更新」
  *
  * シートは作り直さず中身だけ入れ替えるので、「ウェブに公開」の埋め込みはそのまま使えます。
+ *
+ * 【フラグ】工事Index の S列（フラグ）をプルダウンで選ぶと、その行の B〜P列の書式を変えます。
+ *  未施工：元に戻す（文字は黒、セルの色は外す＝しま模様に戻る）
+ *  継続-請無・継続-請有・工事完了：文字をピンク
+ *  完工：セルをグレー　／　中止・重複：セルを濃いグレー
  */
 
 const SOURCE_SHEET = '工事Index';   // 元のシート
@@ -24,6 +29,23 @@ const SPARE_ROWS = 10;              // サイト表示の下に残す空行
 const REFRESH_HOURS = 1;            // 自動更新の間隔（時間）
 const DEFAULT_ROW_HEIGHT = 21;
 
+// フラグ（S列）と行の書式
+const FLAG_COL = 19;                 // S列
+const FLAG_FIRST_ROW = 4;            // データは4行目から
+const FORMAT_FIRST_COL = 2;          // B列
+const FORMAT_LAST_COL = 16;          // P列
+const TEXT_BLACK = '#000000';
+const TEXT_PINK = '#FF4FA3';
+const FLAG_STYLES = {
+  '未施工':   { font: TEXT_BLACK, background: null },        // 元に戻す（しま模様は条件付き書式で付く）
+  '継続-請無': { font: TEXT_PINK, background: null },
+  '継続-請有': { font: TEXT_PINK, background: null },
+  '工事完了': { font: TEXT_PINK, background: null },
+  '完工':     { font: TEXT_BLACK, background: '#D9D9D9' },   // グレーアウト
+  '中止':     { font: TEXT_BLACK, background: '#808080' },   // ダークアウト
+  '重複':     { font: TEXT_BLACK, background: '#808080' }
+};
+
 
 // ===== メニュー・きっかけ =====
 
@@ -32,6 +54,8 @@ function onOpen() {
     .createMenu('サイト表示')
     .addItem('今すぐ更新', 'menuUpdateSite')
     .addItem('自動更新を設定（最初に1回）', 'setupSiteTrigger')
+    .addSeparator()
+    .addItem('フラグの書式をすべて付け直す', 'menuApplyAllFlags')
     .addToUi();
 }
 
@@ -41,8 +65,44 @@ function onOpen() {
 function onEdit(e) {
   const range = e && e.range;
   if (!range || range.getSheet().getName() !== SOURCE_SHEET) return;
-  if (range.getColumn() > MARK_COL) return;
-  updateSiteWithLock_();
+  // S列（フラグ）を選んだら、その行の書式を変える
+  if (range.getColumn() <= FLAG_COL && range.getLastColumn() >= FLAG_COL) applyFlagRows_(range.getSheet(), range.getRow(), range.getLastRow(), true);
+  // A列の ★・× を変えたら、サイト表示を更新
+  if (range.getColumn() <= MARK_COL) updateSiteWithLock_();
+}
+
+/**
+ * メニュー「フラグの書式をすべて付け直す」：コピー・貼り付けや並べ替えのあとに使う
+ */
+function menuApplyAllFlags() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SOURCE_SHEET);
+  const n = applyFlagRows_(sheet, FLAG_FIRST_ROW, sheet.getLastRow(), false);
+  SpreadsheetApp.getUi().alert(`フラグの書式を付け直しました（${n}行）。`);
+}
+
+/**
+ * first〜last 行の S列を読み、B〜P列の文字色・セルの色を付ける
+ *  一覧に無い値の行は触らない
+ * @param {boolean} blankResets true：空欄も「未施工」と同じく元に戻す（フラグを消したとき）
+ *                              false：空欄の行は触らない（まとめて付け直すとき。手で付けた色を消さない）
+ * @return {number} 書式を付けた行数
+ */
+function applyFlagRows_(sheet, first, last, blankResets) {
+  const from = Math.max(first, FLAG_FIRST_ROW);
+  if (last < from) return 0;
+  const flags = sheet.getRange(from, FLAG_COL, last - from + 1, 1).getDisplayValues();
+  const width = FORMAT_LAST_COL - FORMAT_FIRST_COL + 1;
+  let count = 0;
+  flags.forEach((r, i) => {
+    const flag = String(r[0]).trim();
+    const style = flag === '' ? (blankResets ? FLAG_STYLES['未施工'] : null) : FLAG_STYLES[flag];
+    if (!style) return;
+    const range = sheet.getRange(from + i, FORMAT_FIRST_COL, 1, width);
+    range.setFontColor(style.font);
+    range.setBackground(style.background);
+    count++;
+  });
+  return count;
 }
 
 function menuUpdateSite() {

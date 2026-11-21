@@ -43,7 +43,8 @@ class Sheet {
       getBackgrounds: () => Array.from({ length: nr }, (_, i) => Array.from({ length: nc }, (_, j) => s.bgs[`${r + i},${c + j}`] || '#ffffff')),
       getDisplayValues: () => Array.from({ length: nr }, (_, i) => Array.from({ length: nc }, (_, j) => String(s.get(r + i, c + j)))),
       breakApart() { return this; }, clearDataValidations() { return this; },
-      clearContent() { for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) s.set(r + i, c + j, ''); return this; },
+      clearContent() { for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) if (s.get(r + i, c + j) !== '') s.set(r + i, c + j, ''); return this; },
+      clearNote() { for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) delete s.notes[`${r + i},${c + j}`]; return this; },
       copyTo(dest, type) {
         const d = dest.getSheet(), dr = dest.getRow(), dc = dest.getColumn();
         if (type === 'PASTE_COLUMN_WIDTHS') { for (let j = 0; j < nc; j++) d.widths[dc + j] = s.widths[c + j] || 100; return; }
@@ -206,6 +207,19 @@ test('塗りつぶし無しの行は、完工 → 空欄・未施工で塗りつ
   // グレーでない行のピンクへの切り替えは、セルの色を変えない
   setFlag(w, 4, '継続-請無'); gas.onEdit({ range: w.src.getRange(4, 19) });
   assert.deepStrictEqual(rowStyle(w.src, 4).bg, [BLUE, BLUE, BLUE]);
+});
+
+test('サイト表示にはフラグ列（S列）を出さない（中身・メモを消して列を隠す）。工事Index のフラグは残す', () => {
+  const w = world(); const { gas } = load(w);
+  w.src.set(1, 19, 'フラグ'); setFlag(w, 6, '完工'); gas.onEdit({ range: w.src.getRange(6, 19) });
+  gas.refreshSite();
+  const d = w.ss.getSheetByName('サイト表示');
+  assert.deepStrictEqual(col(d, 19).filter(v => v !== ''), [], 'フラグの文字が出ている');
+  assert.deepStrictEqual(Object.keys(d.notes), [], 'メモが写っている');
+  assert.strictEqual(d.isColumnHiddenByUser(19), true, 'S列が隠れていない');
+  assert.strictEqual(d.isColumnHiddenByUser(18), false);
+  assert.strictEqual(w.src.get(6, 19), '完工');
+  assert.strictEqual(w.src.isColumnHiddenByUser(19), false);
 });
 
 let failed = 0;

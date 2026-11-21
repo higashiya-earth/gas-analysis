@@ -13,6 +13,8 @@
  *
  * シートは作り直さず中身だけ入れ替えるので、「ウェブに公開」の埋め込みはそのまま使えます。
  *
+ * 「サイト表示」には、フラグ列（S列）を出さない（中身を消して列を隠す）。
+ *
  * 【フラグ】工事Index の S列（フラグ）をプルダウンで選ぶと、その行の B〜P列の書式を変えます（S列のセルの色も同じにする）。
  *  未施工：元に戻す（文字は黒、セルの色は外す＝しま模様に戻る）
  *  継続-請無・継続-請有・工事完了：文字をピンク
@@ -275,6 +277,13 @@ function updateSite_() {
 
   // ★ の印は見せない
   if (star >= 0) dst.getRange(HEADER_ROWS + 1, MARK_COL).clearContent();
+
+  // フラグ列（S列）は見せない：中身・メモ・プルダウンを消して、列を隠す
+  if (cols >= FLAG_COL) {
+    const flagRange = dst.getRange(1, FLAG_COL, dst.getMaxRows(), 1);
+    flagRange.clearContent().clearNote().clearDataValidations();
+    dst.hideColumns(FLAG_COL);
+  }
 
   return { from: HEADER_ROWS + 1 + fromIdx, rows: rows.length - HEADER_ROWS, hidden };
 }

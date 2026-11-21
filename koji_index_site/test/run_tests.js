@@ -11,7 +11,7 @@ const same = (a, e, m) => assert.deepStrictEqual(JSON.parse(JSON.stringify(a)), 
 class Sheet {
   constructor(name, rows) {
     this.name = name; this.cells = rows.map(r => r.slice()); this.maxRows = Math.max(rows.length, 30); this.maxCols = 24;
-    this.formats = {}; this.heights = {}; this.widths = {}; this.hiddenCols = {}; this.frozen = [0, 0]; this.gridHidden = false; this.cf = 0; this.fonts = {}; this.bgs = {};
+    this.formats = {}; this.heights = {}; this.widths = {}; this.hiddenCols = {}; this.frozen = [0, 0]; this.gridHidden = false; this.cf = 0; this.fonts = {}; this.bgs = {}; this.notes = {};
   }
   getName() { return this.name; }
   get(r, c) { return (this.cells[r - 1] || [])[c - 1] ?? ''; }
@@ -38,6 +38,8 @@ class Sheet {
     const s = this;
     if (r + nr - 1 > s.maxRows) throw new Error(`範囲外 ${s.name} ${r + nr - 1}行`);
     return {
+      getNotes: () => Array.from({ length: nr }, (_, i) => Array.from({ length: nc }, (_, j) => s.notes[`${r + i},${c + j}`] || '')),
+      setNote(v) { if (v) s.notes[`${r},${c}`] = v; else delete s.notes[`${r},${c}`]; return this; },
       getBackgrounds: () => Array.from({ length: nr }, (_, i) => Array.from({ length: nc }, (_, j) => s.bgs[`${r + i},${c + j}`] || '#ffffff')),
       getDisplayValues: () => Array.from({ length: nr }, (_, i) => Array.from({ length: nc }, (_, j) => String(s.get(r + i, c + j)))),
       breakApart() { return this; }, clearDataValidations() { return this; },
@@ -182,6 +184,28 @@ test('もとの色に戻す：4〜80行目のように行ごと色が付いて�
   setFlag(w, 7, '継続-請有'); gas.onEdit({ range: w.src.getRange(7, 19) });
   assert.strictEqual(w.src.bgs['7,19'], BLUE);
   assert.deepStrictEqual(rowStyle(w.src, 7).font, ['#FF4FA3', '#FF4FA3', '#FF4FA3']);
+});
+
+test('塗りつぶし無しの行は、完工 → 空欄・未施工で塗りつぶし無しに戻る（上が水色のブロックでも）', () => {
+  const w = world(); const { gas } = load(w);
+  const BLUE = '#c9daf8';
+  for (let c = 2; c <= 16; c++) w.src.bgs[`4,${c}`] = BLUE;   // 4行目だけ水色（ブロックの最後の行）、5行目から塗りつぶし無し
+  w.src.bgs['4,19'] = BLUE;
+  setFlag(w, 5, '完工'); gas.onEdit({ range: w.src.getRange(5, 19) });
+  assert.strictEqual(w.src.notes['5,19'], '元の色：なし');
+  setFlag(w, 5, ''); gas.onEdit({ range: w.src.getRange(5, 19) });
+  assert.deepStrictEqual(rowStyle(w.src, 5).bg, [null, null, null], '水色になった');
+  assert.strictEqual(w.src.bgs['5,19'], undefined);
+  assert.strictEqual(w.src.notes['5,19'], undefined, 'メモが残った');
+  // 水色の行は、完工 → 中止 → 未施工 でも水色に戻る（グレー同士の切り替えでメモを上書きしない）
+  setFlag(w, 4, '完工'); gas.onEdit({ range: w.src.getRange(4, 19) });
+  setFlag(w, 4, '中止'); gas.onEdit({ range: w.src.getRange(4, 19) });
+  assert.strictEqual(w.src.notes['4,19'], '元の色：#c9daf8');
+  setFlag(w, 4, '未施工'); gas.onEdit({ range: w.src.getRange(4, 19) });
+  assert.deepStrictEqual(rowStyle(w.src, 4).bg, [BLUE, BLUE, BLUE]);
+  // グレーでない行のピンクへの切り替えは、セルの色を変えない
+  setFlag(w, 4, '継続-請無'); gas.onEdit({ range: w.src.getRange(4, 19) });
+  assert.deepStrictEqual(rowStyle(w.src, 4).bg, [BLUE, BLUE, BLUE]);
 });
 
 let failed = 0;

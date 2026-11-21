@@ -82,9 +82,11 @@ function menuApplyAllFlags() {
 
 /**
  * first〜last 行の S列を読み、B〜P列の文字色・セルの色を付ける（S列のセルの色も同じにする）
- *  セルの色は、完工・中止・重複ならグレー。それ以外は「その行のもとの色」に戻す。
- *  もとの色は、近くの行（上、無ければ下）のうち、グレーにしていない行の B列の色を使う
- *  （4〜80行目のように行ごと色が付いている所はその色、色が無い所は色を外す＝しま模様）
+ *  ・完工・中止・重複：セルをグレーにする。グレーにする直前の色を、S列のセルのメモに「元の色」として残す
+ *  ・それ以外（未施工・継続・工事完了・空欄）：
+ *      グレーになっている行は、メモの「元の色」に戻す（塗りつぶし無しなら無しに戻す）。
+ *      メモが無い（この版より前にグレーにした）行だけ、近くのグレーでない行の色を使う。
+ *      グレーでない行は、セルの色はそのまま（文字色だけ変える）
  *  一覧に無い値の行は触らない
  * @param {boolean} blankResets true：空欄も「未施工」と同じく元に戻す（フラグを消したとき）
  *                              false：空欄の行は触らない（まとめて付け直すとき。手で付けた色を消さない）
@@ -95,10 +97,11 @@ function applyFlagRows_(sheet, first, last, blankResets) {
   const end = sheet.getLastRow();
   if (Math.min(last, end) < from) return 0;
 
-  // データ全体のフラグと B列の色を一度に読む（もとの色を探すため）
+  // データ全体のフラグと B列の色を一度に読む（近くの行の色を探すため）
   const n = end - FLAG_FIRST_ROW + 1;
   const flags = sheet.getRange(FLAG_FIRST_ROW, FLAG_COL, n, 1).getDisplayValues().map(r => String(r[0]).trim());
   const colors = sheet.getRange(FLAG_FIRST_ROW, FORMAT_FIRST_COL, n, 1).getBackgrounds().map(r => normalizeColor_(r[0]));
+  const notes = sheet.getRange(FLAG_FIRST_ROW, FLAG_COL, n, 1).getNotes().map(r => String(r[0] || ''));
 
   const width = FORMAT_LAST_COL - FORMAT_FIRST_COL + 1;
   let count = 0;
@@ -107,9 +110,23 @@ function applyFlagRows_(sheet, first, last, blankResets) {
     const flag = flags[i];
     const style = flag === '' ? (blankResets ? FLAG_STYLES['未施工'] : null) : FLAG_STYLES[flag];
     if (!style) continue;
-    const background = style.background || baseColor_(flags, colors, i);
-    sheet.getRange(row, FORMAT_FIRST_COL, 1, width).setFontColor(style.font).setBackground(background);
-    sheet.getRange(row, FLAG_COL).setBackground(background);   // フラグのセルも同じ行の色に（文字色は変えない）
+
+    const current = colors[i];
+    const isGray = GRAY_COLORS.indexOf(current || '') >= 0;
+    const saved = savedColor_(notes[i]);   // undefined：メモ無し、null：塗りつぶし無し、'#…'：その色
+    const flagCell = sheet.getRange(row, FLAG_COL);
+    let background;
+    if (style.background) {
+      background = style.background;
+      if (!isGray && saved === undefined) flagCell.setNote(colorNote_(current));   // グレーにする前の色を覚える
+    } else {
+      background = isGray ? (saved !== undefined ? saved : baseColor_(flags, colors, i)) : current;
+      if (saved !== undefined) flagCell.setNote('');
+    }
+
+    const target = sheet.getRange(row, FORMAT_FIRST_COL, 1, width).setFontColor(style.font);
+    if (style.background || isGray) target.setBackground(background);
+    flagCell.setBackground(background);   // フラグのセルも同じ行の色に（文字色は変えない）
     colors[i] = normalizeColor_(background);
     count++;
   }
@@ -117,9 +134,22 @@ function applyFlagRows_(sheet, first, last, blankResets) {
 }
 
 const GRAY_COLORS = Object.keys(FLAG_STYLES).map(k => FLAG_STYLES[k].background).filter(Boolean).map(c => c.toLowerCase());
+const COLOR_NOTE_HEAD = '元の色：';
+const NO_FILL = 'なし';
+
+function colorNote_(color) { return COLOR_NOTE_HEAD + (color || NO_FILL); }
+
+/** メモから元の色を読む。メモ無し＝undefined、「なし」＝null */
+function savedColor_(note) {
+  const t = String(note || '').trim();
+  if (t.indexOf(COLOR_NOTE_HEAD) !== 0) return undefined;
+  const v = t.slice(COLOR_NOTE_HEAD.length).trim();
+  return v === NO_FILL ? null : normalizeColor_(v);
+}
 
 /**
- * i 行目（0始まり）の「もとの色」：上の行から順に、下の行から順に、グレーにしていない行の色を探す。無ければ null
+ * i 行目（0始まり）の近くの色：上の行から順に、下の行から順に、グレーにしていない行の色を探す。無ければ null
+ * （メモが無い、この版より前にグレーにした行のためだけに使う）
  */
 function baseColor_(flags, colors, i) {
   const usable = j => !(FLAG_STYLES[flags[j]] && FLAG_STYLES[flags[j]].background) && GRAY_COLORS.indexOf(colors[j] || '') < 0;
